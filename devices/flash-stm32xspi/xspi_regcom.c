@@ -15,6 +15,8 @@
 
 #include "xspi_common.h"
 #include "flash_params.h"
+#include "chip_setup.h"
+#include <syspage.h>
 
 typedef struct {
 	u32 ccr;
@@ -44,6 +46,7 @@ static struct flash_memParams {
 	const flash_opDefinition_t *wrEn;
 	const flash_opDefinition_t *wrDis;
 	const char *name;
+	u8 paramsStored;
 } memParams[XSPI_N_CONTROLLERS];
 
 
@@ -836,6 +839,7 @@ int xspi_regcom_init(unsigned int minor)
 	fp = &mp->params;
 	hal_memset(fp, 0, sizeof(*fp));
 
+	mp->paramsStored = 0;
 	mp->chipErase = &opDef_chip_erase;
 	mp->status = &opDef_read_status;
 	mp->wrEn = &opDef_write_enable;
@@ -905,6 +909,63 @@ int xspi_regcom_init(unsigned int minor)
 			xspi_memSize[minor] >> 20,
 			DEV_STORAGE,
 			minor);
+
+	return EOK;
+}
+
+
+static void xspi_regcom_serializeCommand(struct xspi_commandRegs_v1 *reg, const flash_xspiSetup_t *op)
+{
+	reg->ccr = op->ccr;
+	reg->ir = op->ir;
+	reg->tcr = op->tcr;
+}
+
+
+static void xspi_regcom_serializeConfig(int minor, struct xspi_chipSetup_v1 *cs)
+{
+	struct flash_memParams *mp;
+	mp = &memParams[minor];
+	cs->version = CHIP_SETUP_VER_1;
+	hal_strncpy(cs->name, mp->name, sizeof(cs->name));
+	cs->name[sizeof(cs->name) - 1] = '\0';
+	hal_memcpy(cs->jedecID, mp->device_id, sizeof(cs->jedecID));
+	cs->log_chipSize = mp->params.log_chipSize;
+	cs->log_eraseSize = mp->params.log_eraseSize;
+	cs->log_pageSize = mp->params.log_pageSize;
+	cs->eraseTimeoutMs = mp->params.eraseBlockTimeout;
+	cs->chipEraseTimeoutMs = mp->params.eraseChipTimeout;
+	xspi_regcom_serializeCommand(&cs->read, &mp->read);
+	xspi_regcom_serializeCommand(&cs->write, &mp->write);
+	xspi_regcom_serializeCommand(&cs->erase, &mp->erase);
+	xspi_regcom_serializeCommand(&cs->chipErase, &mp->chipErase->reg);
+	xspi_regcom_serializeCommand(&cs->writeEnable, &mp->wrEn->reg);
+	xspi_regcom_serializeCommand(&cs->writeDisable, &mp->wrDis->reg);
+	xspi_regcom_serializeCommand(&cs->readStatus, &mp->status->reg);
+	cs->readStatus_dataLen = mp->status->dataLen;
+	cs->readStatus_addr = mp->status->addr;
+}
+
+
+int xspi_regcom_done(unsigned int minor)
+{
+	/* Here we create a syspage "file" that conveys Flash parameters to the userspace driver */
+	char name[32];
+	u32 portNum;
+	struct xspi_chipSetup_v1 *cs;
+
+	if (memParams[minor].paramsStored == 0) {
+		switch (xspi_ctrlParams[minor].spiPort) {
+			case XSPIM_PORT1: portNum = 1; break;
+			case XSPIM_PORT2: portNum = 2; break;
+			default: return -EINVAL;
+		}
+
+		lib_sprintf(name, FLASHCS_FORMAT, portNum);
+		cs = syspage_progAllocateAndAdd("axi_app", sizeof(*cs), name, 0);
+		xspi_regcom_serializeConfig(minor, cs);
+		memParams[minor].paramsStored = 1;
+	}
 
 	return EOK;
 }
