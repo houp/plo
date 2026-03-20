@@ -166,9 +166,11 @@ start_common:
 other_core_trap:
 	dsb ish
 	wfe
-	ldr x0, [x1]
-	cbz x0, other_core_trap
-	b hal_exitToEL1
+	/*
+	 * Keep secondary CPUs parked until generic AArch64 grows an SMP-capable
+	 * kernel target. The current generic kernel configuration is single-core.
+	 */
+	b other_core_trap
 
 start_core_0:
 	adr x1, _startc
