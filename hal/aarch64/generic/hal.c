@@ -14,6 +14,8 @@
 
 #include <hal/hal.h>
 
+#include "../cpu.h"
+
 
 struct {
 	/* These fields are used in assembly code in _init.S, don't reorder them */
@@ -45,11 +47,34 @@ extern void timer_done(void);
 extern void hal_exitToEL1(void) __attribute__((noreturn));
 
 
+static void hal_printCurrentEl(void)
+{
+	switch (sysreg_read(currentEL)) {
+		case 0xc:
+			hal_consolePrint("hal: entry EL3\n");
+			break;
+
+		case 0x8:
+			hal_consolePrint("hal: entry EL2\n");
+			break;
+
+		case 0x4:
+			hal_consolePrint("hal: entry EL1\n");
+			break;
+
+		default:
+			hal_consolePrint("hal: entry EL?\n");
+			break;
+	}
+}
+
+
 void hal_init(void)
 {
 	interrupts_init();
 	timer_init();
 	console_init();
+	hal_printCurrentEl();
 
 	hal_common.entry = (addr_t)-1;
 }
