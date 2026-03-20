@@ -23,6 +23,7 @@
 enum {
 	gicd_ctlr = 0x0 / sizeof(u32),
 	gicd_typer = 0x4 / sizeof(u32),
+	gicd_igroupr0 = 0x80 / sizeof(u32),
 	gicd_isenabler0 = 0x100 / sizeof(u32),
 	gicd_icenabler0 = 0x180 / sizeof(u32),
 	gicd_icpendr0 = 0x280 / sizeof(u32),
@@ -58,6 +59,12 @@ static struct {
 	volatile u32 *gicc;
 	intr_handler_t handlers[SIZE_INTERRUPTS];
 } interrupts_common;
+
+
+static int interrupts_isEl3(void)
+{
+	return (sysreg_read(currentEL) == 0xcU) ? 1 : 0;
+}
 
 
 void hal_interruptsEnable(unsigned int irqn)
@@ -188,6 +195,7 @@ void interrupts_init(void)
 {
 	unsigned int i;
 	unsigned int nRegs;
+	int el3;
 
 	interrupts_common.gicd = GICD_BASE_ADDRESS;
 	interrupts_common.gicc = GICC_BASE_ADDRESS;
@@ -202,6 +210,8 @@ void interrupts_init(void)
 		nRegs = SIZE_INTERRUPTS / 32;
 	}
 
+	el3 = interrupts_isEl3();
+
 	*(interrupts_common.gicd + gicd_ctlr) = 0;
 
 	for (i = 0; i < nRegs; ++i) {
@@ -210,12 +220,25 @@ void interrupts_init(void)
 		*(interrupts_common.gicd + gicd_icactiver0 + i) = 0xffffffff;
 	}
 
+	if (el3 != 0) {
+		for (i = 0; i < nRegs; ++i) {
+			*(interrupts_common.gicd + gicd_igroupr0 + i) = 0xffffffff;
+		}
+	}
+
 	for (i = 16; i < SIZE_INTERRUPTS; ++i) {
 		interrupts_setConf(i, gicv2_cfg_high_level);
 	}
 
 	*(interrupts_common.gicc + gicc_pmr) = 0xff;
-	*(interrupts_common.gicc + gicc_bpr) = 0;
-	*(interrupts_common.gicc + gicc_ctlr) = 1;
-	*(interrupts_common.gicd + gicd_ctlr) = 1;
+	if (el3 != 0) {
+		*(interrupts_common.gicc + gicc_bpr) = 2;
+		*(interrupts_common.gicc + gicc_ctlr) = 0x1b;
+		*(interrupts_common.gicd + gicd_ctlr) = 0x3;
+	}
+	else {
+		*(interrupts_common.gicc + gicc_bpr) = 0;
+		*(interrupts_common.gicc + gicc_ctlr) = 1;
+		*(interrupts_common.gicd + gicd_ctlr) = 1;
+	}
 }
