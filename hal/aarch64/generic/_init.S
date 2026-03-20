@@ -59,8 +59,14 @@ _start:
 
 	mrs x0, currentEL
 	cmp x0, #0xc
-	b.ne error_loop
+	b.eq start_el3
+	cmp x0, #0x8
+	b.eq start_el2
+	cmp x0, #0x4
+	b.eq start_el1
+	b error_loop
 
+start_el3:
 	ldr x0, =0x30c50838
 	msr sctlr_el3, x0
 
@@ -69,6 +75,9 @@ _start:
 	mov x0, #0b1110011
 	msr actlr_el3, x0
 
+	msr cntvoff_el2, xzr
+	mov x0, #0x3
+	msr cnthctl_el2, x0
 	msr cptr_el2, xzr
 	ldr x0, =0x30c00838
 	msr sctlr_el2, x0
@@ -88,7 +97,44 @@ _start:
 
 	ic iallu
 	tlbi alle3
+	b start_common
 
+
+start_el2:
+	msr cntvoff_el2, xzr
+	mov x0, #0x3
+	msr cnthctl_el2, x0
+	msr cptr_el2, xzr
+	ldr x0, =0x30c00838
+	msr sctlr_el2, x0
+	msr sctlr_el1, xzr
+	msr vttbr_el2, xzr
+
+	mov x0, #0b1110011
+	msr actlr_el2, x0
+	mov x0, #((1 << 31) | (1 << 29))
+	msr hcr_el2, x0
+
+	adr x0, _vector_table
+	msr vbar_el2, x0
+
+	ic iallu
+	tlbi alle2
+	b start_common
+
+
+start_el1:
+	adr x0, _vector_table
+	msr vbar_el1, x0
+
+	mrs x0, cpacr_el1
+	orr x0, x0, #(0x3 << 20)
+	msr cpacr_el1, x0
+
+	ic iallu
+	tlbi vmalle1
+
+start_common:
 	dsb sy
 	isb
 
@@ -113,12 +159,31 @@ hal_exitToEL1:
 	isb
 	adr x0, hal_common
 	ldp x9, x0, [x0]
+	mrs x1, currentEL
+	cmp x1, #0xc
+	b.eq exit_el3
+	cmp x1, #0x8
+	b.eq exit_el2
+	cmp x1, #0x4
+	b.eq exit_el1
+	b error_loop
+
+exit_el3:
 	msr elr_el3, x0
 	mov x0, #0b1111000101
 	msr spsr_el3, x0
 	mov x2, #0x5b1
 	msr scr_el3, x2
 	eret
+
+exit_el2:
+	msr elr_el2, x0
+	mov x0, #0b1111000101
+	msr spsr_el2, x0
+	eret
+
+exit_el1:
+	br x0
 .size hal_exitToEL1, .-hal_exitToEL1
 
 
