@@ -95,7 +95,7 @@ void hal_syspageSet(hal_syspage_t *hs)
 
 const char *hal_cpuInfo(void)
 {
-	return "Cortex-A53 Generic";
+	return CPU_INFO;
 }
 
 

@@ -50,6 +50,12 @@ typedef struct {
 #include "../cpu.h"
 
 #if defined(__TARGET_AARCH64A72)
+#define CPU_INFO "Cortex-A72 Generic"
+#else
+#define CPU_INFO "Cortex-A53 Generic"
+#endif
+
+#if defined(__TARGET_AARCH64A72)
 #define PATH_KERNEL "phoenix-aarch64a72-generic.elf"
 #else
 #define PATH_KERNEL "phoenix-aarch64a53-generic.elf"
