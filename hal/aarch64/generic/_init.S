@@ -19,8 +19,23 @@
 
 .section .init, "ax"
 
+#define UARTFR_OFFSET 0x18
+#define UARTFR_TXFF   (1 << 5)
+
 .extern hal_common
 .extern hal_coreJumpFlag
+
+
+.macro uart_putc imm
+991:
+	ldr x3, =(PLO_UART0_BASE_ADDRESS + UARTFR_OFFSET)
+	ldr w4, [x3]
+	tst w4, #UARTFR_TXFF
+	b.ne 991b
+	ldr x3, =PLO_UART0_BASE_ADDRESS
+	mov w4, #\imm
+	str w4, [x3]
+.endm
 
 
 .globl _start
@@ -172,6 +187,8 @@ error_loop:
 hal_exitToEL1:
 	dsb sy
 	isb
+	uart_putc 10
+	uart_putc 65
 	adr x0, hal_common
 	ldp x9, x0, [x0]
 	mrs x1, currentEL
@@ -184,6 +201,8 @@ hal_exitToEL1:
 	b error_loop
 
 exit_el3:
+	uart_putc 51
+	uart_putc 10
 	msr elr_el3, x0
 	mov x0, #0b1111000101
 	msr spsr_el3, x0
@@ -192,12 +211,16 @@ exit_el3:
 	eret
 
 exit_el2:
+	uart_putc 50
+	uart_putc 10
 	msr elr_el2, x0
 	mov x0, #0b1111000101
 	msr spsr_el2, x0
 	eret
 
 exit_el1:
+	uart_putc 49
+	uart_putc 10
 	br x0
 .size hal_exitToEL1, .-hal_exitToEL1
 
