@@ -222,12 +222,17 @@ void hal_cpuReboot(void)
 int hal_cpuJump(void)
 {
 	if (hal_common.entry == (addr_t)-1) {
+		hal_consolePrint("hal: jump no entry\n");
 		return -1;
 	}
 
+	hal_consolePrint("hal: jump entry\n");
 	hal_interruptsDisableAll();
+	hal_consolePrint("hal: jump irq off\n");
 	hal_coreJumpFlag = 1;
+	hal_consolePrint("hal: jump exit el1\n");
 	hal_exitToEL1();
 
+	hal_consolePrint("hal: jump returned\n");
 	return 0;
 }
