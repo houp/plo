@@ -1,0 +1,24 @@
+/*
+ * Phoenix-RTOS
+ *
+ * Operating system loader
+ *
+ * Linker Template and Platform Config for AArch64 A72 Generic
+ *
+ * Copyright 2026 Phoenix Systems
+ *
+ * This file is part of Phoenix-RTOS.
+ *
+ * %LICENSE%
+ */
+
+#ifndef AARCH64A72_GENERIC_LDT
+#define AARCH64A72_GENERIC_LDT
+
+/*
+ * Keep the current generic memory layout shared until A72-specific loader
+ * placement or layout requirements are proven.
+ */
+#include "aarch64a53-generic.ldt"
+
+#endif
