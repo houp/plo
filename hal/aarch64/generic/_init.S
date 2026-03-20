@@ -20,6 +20,7 @@
 .section .init, "ax"
 
 .extern hal_common
+.extern hal_coreJumpFlag
 
 
 .globl _start
@@ -141,6 +142,20 @@ start_common:
 	adr x1, _stack
 	mov sp, x1
 
+	/* Trap all cores except core 0 until the kernel handoff. */
+	adr x1, hal_coreJumpFlag
+	str xzr, [x1]
+	mrs x0, mpidr_el1
+	and x0, x0, #0xff
+	cbz x0, start_core_0
+other_core_trap:
+	dsb ish
+	wfe
+	ldr x0, [x1]
+	cbz x0, other_core_trap
+	b hal_exitToEL1
+
+start_core_0:
 	adr x1, _startc
 	br x1
 

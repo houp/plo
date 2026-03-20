@@ -21,6 +21,8 @@ struct {
 	addr_t entry;
 } hal_common;
 
+volatile u64 hal_coreJumpFlag;
+
 
 /* Linker symbols */
 extern char __init_start[], __init_end[];
@@ -199,6 +201,7 @@ int hal_cpuJump(void)
 	}
 
 	hal_interruptsDisableAll();
+	hal_coreJumpFlag = 1;
 	hal_exitToEL1();
 
 	return 0;
