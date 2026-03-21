@@ -43,6 +43,15 @@
 
 typedef struct {
 	long long int resetReason;
+#if defined(HAS_GRAPHICS) && (HAS_GRAPHICS != 0)
+	struct {
+		unsigned short width;
+		unsigned short height;
+		unsigned short bpp;
+		unsigned short pitch;
+		unsigned long framebuffer; /* addr_t */
+	} __attribute__((packed)) graphmode;
+#endif
 } __attribute__((packed)) hal_syspage_t;
 
 #include <phoenix/syspage.h>

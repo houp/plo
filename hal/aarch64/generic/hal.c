@@ -44,6 +44,7 @@ extern void console_init(void);
 extern void interrupts_init(void);
 extern void timer_init(void);
 extern void timer_done(void);
+extern void video_init(void);
 extern void hal_exitToEL1(void) __attribute__((noreturn));
 
 
@@ -74,6 +75,7 @@ void hal_init(void)
 	interrupts_init();
 	timer_init();
 	console_init();
+	video_init();
 	hal_printCurrentEl();
 
 	hal_common.entry = (addr_t)-1;

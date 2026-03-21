@@ -13,4 +13,4 @@ PLO_COMMANDS ?= alias app blob call console copy devices dump echo go help kerne
 
 PLO_ALLDEVICES := ram-storage
 
-OBJS += $(addprefix $(PREFIX_O)hal/$(TARGET_SUFF)/$(TARGET_SUBFAMILY)/, _init.o hal.o console.o interrupts.o timer.o)
+OBJS += $(addprefix $(PREFIX_O)hal/$(TARGET_SUFF)/$(TARGET_SUBFAMILY)/, _init.o hal.o console.o interrupts.o timer.o video.o)
