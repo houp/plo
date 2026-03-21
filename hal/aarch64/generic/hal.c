@@ -45,6 +45,7 @@ extern void interrupts_init(void);
 extern void timer_init(void);
 extern void timer_done(void);
 extern void video_init(void);
+extern void video_publishGraphmode(void);
 extern void video_markHalReady(void);
 extern void video_markKernelJump(void);
 extern void hal_exitToEL1(void) __attribute__((noreturn));
@@ -88,6 +89,12 @@ void hal_init(void)
 void hal_done(void)
 {
 	timer_done();
+}
+
+
+void hal_graphicsInit(void)
+{
+	video_publishGraphmode();
 }
 
 

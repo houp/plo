@@ -286,15 +286,13 @@ static void video_updateProgress(u32 stage)
 }
 
 
-void video_init(void)
+static void video_publish(void)
 {
 	graphmode_t graphmode;
 
-	if (video_framebufferInit() < 0) {
+	if (video_common.framebuffer == NULL) {
 		return;
 	}
-
-	video_drawSignal();
 
 #if defined(HAS_GRAPHICS) && (HAS_GRAPHICS != 0)
 	graphmode.width = (u16)video_common.width;
@@ -302,8 +300,24 @@ void video_init(void)
 	graphmode.bpp = (u16)video_common.bpp;
 	graphmode.pitch = (u16)video_common.pitch;
 	graphmode.framebuffer = (addr_t)video_common.framebuffer;
-	syspage_graphmodeSet(graphmode);
+	syspage_graphmodeSet(&graphmode);
 #endif
+}
+
+
+void video_init(void)
+{
+	if (video_framebufferInit() < 0) {
+		return;
+	}
+
+	video_drawSignal();
+}
+
+
+void video_publishGraphmode(void)
+{
+	video_publish();
 }
 
 
@@ -321,6 +335,11 @@ void video_markKernelJump(void)
 #else
 
 void video_init(void)
+{
+}
+
+
+void video_publishGraphmode(void)
 {
 }
 
