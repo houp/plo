@@ -45,6 +45,8 @@ extern void interrupts_init(void);
 extern void timer_init(void);
 extern void timer_done(void);
 extern void video_init(void);
+extern void video_markHalReady(void);
+extern void video_markKernelJump(void);
 extern void hal_exitToEL1(void) __attribute__((noreturn));
 
 
@@ -77,6 +79,7 @@ void hal_init(void)
 	console_init();
 	video_init();
 	hal_printCurrentEl();
+	video_markHalReady();
 
 	hal_common.entry = (addr_t)-1;
 }
@@ -229,6 +232,7 @@ int hal_cpuJump(void)
 	}
 
 	hal_consolePrint("hal: jump entry\n");
+	video_markKernelJump();
 	hal_interruptsDisableAll();
 	hal_consolePrint("hal: jump irq off\n");
 	hal_coreJumpFlag = 1;

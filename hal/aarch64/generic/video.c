@@ -60,8 +60,17 @@ enum {
 
 enum {
 	video_background = 0x003060a0u,
-	video_marker = 0x00f0f0f0u,
+	video_panel = 0x00484848u,
+	video_stageOff = 0x00202020u,
+	video_stageOn = 0x00f0f0f0u,
 	video_mailboxWords = 36u,
+};
+
+enum {
+	video_stageFramebufferReady = 0u,
+	video_stageHalReady = 1u,
+	video_stageKernelJump = 2u,
+	video_stageCount = 3u,
 };
 
 
@@ -73,6 +82,7 @@ static struct {
 	u32 pitch;
 	u32 bpp;
 	u32 size;
+	u32 progressStage;
 } video_common = {
 	.mailbox = (volatile u32 *)PLO_RPI_MAILBOX_BASE_ADDRESS,
 };
@@ -179,6 +189,7 @@ static int video_framebufferInit(void)
 	if (video_common.size == 0u) {
 		video_common.size = video_common.pitch * video_common.height;
 	}
+	video_common.progressStage = video_stageFramebufferReady;
 
 	return 0;
 }
@@ -186,7 +197,8 @@ static int video_framebufferInit(void)
 
 static void video_drawSignal(void)
 {
-	u32 x, y, stride, markerWidth, markerHeight;
+	u32 x, y, stride, panelX, panelY, panelW, panelH;
+	u32 boxSize, gap, outerPad, innerPad, boxX, boxY, px;
 	volatile u32 *row;
 
 	if (video_common.framebuffer == NULL) {
@@ -194,8 +206,6 @@ static void video_drawSignal(void)
 	}
 
 	stride = video_common.pitch / sizeof(u32);
-	markerWidth = (video_common.width < 160u) ? video_common.width : 160u;
-	markerHeight = (video_common.height < 80u) ? video_common.height : 80u;
 
 	for (y = 0; y < video_common.height; ++y) {
 		row = video_common.framebuffer + y * stride;
@@ -205,15 +215,74 @@ static void video_drawSignal(void)
 		}
 	}
 
-	for (y = 0; y < markerHeight; ++y) {
+	if ((video_common.width < 128u) || (video_common.height < 64u)) {
+		hal_dcacheClean((addr_t)video_common.framebuffer, (addr_t)video_common.framebuffer + video_common.size);
+		return;
+	}
+
+	outerPad = 16u;
+	innerPad = 8u;
+	boxSize = 48u;
+	gap = 16u;
+	panelW = innerPad * 2u + video_stageCount * boxSize + (video_stageCount - 1u) * gap;
+	panelH = innerPad * 2u + boxSize;
+	panelX = outerPad;
+	panelY = outerPad;
+
+	for (y = panelY; (y < (panelY + panelH)) && (y < video_common.height); ++y) {
 		row = video_common.framebuffer + y * stride;
 
-		for (x = 0; x < markerWidth; ++x) {
-			row[x] = video_marker;
+		for (x = panelX; (x < (panelX + panelW)) && (x < video_common.width); ++x) {
+			row[x] = video_panel;
+		}
+	}
+
+	boxY = panelY + innerPad;
+	boxX = panelX + innerPad;
+
+	for (x = 0; x < video_stageCount; ++x) {
+		u32 color = (x <= video_common.progressStage) ? video_stageOn : video_stageOff;
+		u32 left = boxX + x * (boxSize + gap);
+		u32 right = left + boxSize;
+		u32 bottom = boxY + boxSize;
+
+		if (left >= video_common.width) {
+			break;
+		}
+
+		if (right > video_common.width) {
+			right = video_common.width;
+		}
+
+		if (bottom > video_common.height) {
+			bottom = video_common.height;
+		}
+
+		for (y = boxY; y < bottom; ++y) {
+			row = video_common.framebuffer + y * stride;
+
+			for (px = left; px < right; ++px) {
+				row[px] = color;
+			}
 		}
 	}
 
 	hal_dcacheClean((addr_t)video_common.framebuffer, (addr_t)video_common.framebuffer + video_common.size);
+}
+
+
+static void video_updateProgress(u32 stage)
+{
+	if ((video_common.framebuffer == NULL) || (stage >= video_stageCount)) {
+		return;
+	}
+
+	if (stage <= video_common.progressStage) {
+		return;
+	}
+
+	video_common.progressStage = stage;
+	video_drawSignal();
 }
 
 
@@ -237,9 +306,31 @@ void video_init(void)
 #endif
 }
 
+
+void video_markHalReady(void)
+{
+	video_updateProgress(video_stageHalReady);
+}
+
+
+void video_markKernelJump(void)
+{
+	video_updateProgress(video_stageKernelJump);
+}
+
 #else
 
 void video_init(void)
+{
+}
+
+
+void video_markHalReady(void)
+{
+}
+
+
+void video_markKernelJump(void)
 {
 }
 
