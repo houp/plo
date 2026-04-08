@@ -28,22 +28,6 @@ extern void (*__fini_array_end[])(void);
 extern int main(void);
 
 
-static void board_markPloStart(void)
-{
-#ifdef PLO_RPI_GPIO_GPFSEL4
-	volatile u32 *gpfsel4 = (volatile u32 *)PLO_RPI_GPIO_GPFSEL4;
-	volatile u32 *gpclr1 = (volatile u32 *)PLO_RPI_GPIO_GPCLR1;
-	u32 v;
-
-	v = *gpfsel4;
-	v &= ~(7u << PLO_RPI_GPIO42_SHIFT);
-	v |= PLO_RPI_GPIO42_OUTPUT;
-	*gpfsel4 = v;
-	*gpclr1 = PLO_RPI_GPIO42_MASK;
-#endif
-}
-
-
 void _startc(int argc, char **argv, char **env)
 {
 	size_t i, size;
@@ -64,7 +48,6 @@ void _startc(int argc, char **argv, char **env)
 	}
 	/* Clear the .bss section */
 	hal_memset(__bss_start, 0, __bss_end - __bss_start);
-	board_markPloStart();
 
 	size = __init_array_end - __init_array_start;
 	for (i = 0; i < size; i++) {
