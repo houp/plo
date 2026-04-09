@@ -250,23 +250,18 @@ actled_stage_emit:
 	mov x12, x30
 	mov w11, w0
 	actled_set_off
-	mov w10, #PLO_RPI_ACTLED_GAP_TICKS
 1:
-	actled_delay_once x9
-	subs w10, w10, #1
-	b.ne 1b
-2:
 	actled_set_on
 	actled_delay_once x9
 	actled_set_off
 	actled_delay_once x9
 	subs w11, w11, #1
-	b.ne 2b
+	b.ne 1b
 	mov w10, #PLO_RPI_ACTLED_GAP_TICKS
-3:
+2:
 	actled_delay_once x9
 	subs w10, w10, #1
-	b.ne 3b
+	b.ne 2b
 	mov x30, x12
 	ret
 #endif
