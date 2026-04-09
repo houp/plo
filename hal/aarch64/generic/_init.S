@@ -77,18 +77,27 @@ _start:
 	mov x29, #0
 	mov x30, #0
 
-	mrs x0, currentEL
-	cmp x0, #0xc
+#ifdef PLO_RPI_ACTLED_DIAG
+	mov w0, #5
+	bl actled_stage_emit
+#endif
+
+	mrs x20, currentEL
+#ifdef PLO_RPI_ACTLED_DIAG
+	mov w0, #6
+	bl actled_stage_emit
+#endif
+	cmp x20, #0xc
 	b.eq start_el3
-	cmp x0, #0x8
+	cmp x20, #0x8
 	b.eq start_el2
-	cmp x0, #0x4
+	cmp x20, #0x4
 	b.eq start_el1
-	b error_loop
+	b start_el_unknown
 
 start_el3:
 #ifdef PLO_RPI_ACTLED_DIAG
-	mov w0, #5
+	mov w0, #7
 	bl actled_stage_emit
 #endif
 	ldr x0, =0x30c50838
@@ -126,7 +135,7 @@ start_el3:
 
 start_el2:
 #ifdef PLO_RPI_ACTLED_DIAG
-	mov w0, #6
+	mov w0, #8
 	bl actled_stage_emit
 #endif
 	msr cntvoff_el2, xzr
@@ -153,7 +162,7 @@ start_el2:
 
 start_el1:
 #ifdef PLO_RPI_ACTLED_DIAG
-	mov w0, #7
+	mov w0, #9
 	bl actled_stage_emit
 #endif
 	adr x0, _vector_table
@@ -168,7 +177,7 @@ start_el1:
 
 start_common:
 #ifdef PLO_RPI_ACTLED_DIAG
-	mov w0, #8
+	mov w0, #10
 	bl actled_stage_emit
 #endif
 	dsb sy
@@ -194,12 +203,18 @@ other_core_trap:
 
 start_core_0:
 #ifdef PLO_RPI_ACTLED_DIAG
-	mov w0, #9
+	mov w0, #11
 	bl actled_stage_emit
 #endif
 	adr x1, _startc
 	br x1
 
+
+start_el_unknown:
+#ifdef PLO_RPI_ACTLED_DIAG
+	mov w0, #12
+	bl actled_stage_emit
+#endif
 
 error_loop:
 	b .
