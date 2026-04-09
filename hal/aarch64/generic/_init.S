@@ -42,7 +42,8 @@
 .type _start, %function
 _start:
 #ifdef PLO_RPI_ACTLED_DIAG
-	bl actled_probe_plo_entry
+	mov w0, #4
+	bl actled_stage_emit
 #endif
 	mov x0, #0
 	mov x1, #0
@@ -86,6 +87,10 @@ _start:
 	b error_loop
 
 start_el3:
+#ifdef PLO_RPI_ACTLED_DIAG
+	mov w0, #5
+	bl actled_stage_emit
+#endif
 	ldr x0, =0x30c50838
 	msr sctlr_el3, x0
 
@@ -120,6 +125,10 @@ start_el3:
 
 
 start_el2:
+#ifdef PLO_RPI_ACTLED_DIAG
+	mov w0, #6
+	bl actled_stage_emit
+#endif
 	msr cntvoff_el2, xzr
 	mov x0, #0x3
 	msr cnthctl_el2, x0
@@ -143,6 +152,10 @@ start_el2:
 
 
 start_el1:
+#ifdef PLO_RPI_ACTLED_DIAG
+	mov w0, #7
+	bl actled_stage_emit
+#endif
 	adr x0, _vector_table
 	msr vbar_el1, x0
 
@@ -154,6 +167,10 @@ start_el1:
 	tlbi vmalle1
 
 start_common:
+#ifdef PLO_RPI_ACTLED_DIAG
+	mov w0, #8
+	bl actled_stage_emit
+#endif
 	dsb sy
 	isb
 
@@ -176,6 +193,10 @@ other_core_trap:
 	b other_core_trap
 
 start_core_0:
+#ifdef PLO_RPI_ACTLED_DIAG
+	mov w0, #9
+	bl actled_stage_emit
+#endif
 	adr x1, _startc
 	br x1
 
@@ -217,22 +238,36 @@ error_loop:
 .endm
 
 
-actled_delay:
-	ldr x0, =PLO_RPI_ACTLED_DELAY
+.macro actled_delay_once reg
+	ldr \reg, =PLO_RPI_ACTLED_TICK_DELAY
+991:
+	subs \reg, \reg, #1
+	b.ne 991b
+.endm
+
+
+actled_stage_emit:
+	mov x12, x30
+	mov w11, w0
+	actled_set_off
+	mov w10, #PLO_RPI_ACTLED_GAP_TICKS
 1:
-	subs x0, x0, #1
+	actled_delay_once x9
+	subs w10, w10, #1
 	b.ne 1b
-	ret
-
-
-actled_probe_plo_entry:
+2:
 	actled_set_on
-	bl actled_delay
+	actled_delay_once x9
 	actled_set_off
-	bl actled_delay
-	actled_set_on
-	bl actled_delay
-	actled_set_off
+	actled_delay_once x9
+	subs w11, w11, #1
+	b.ne 2b
+	mov w10, #PLO_RPI_ACTLED_GAP_TICKS
+3:
+	actled_delay_once x9
+	subs w10, w10, #1
+	b.ne 3b
+	mov x30, x12
 	ret
 #endif
 
