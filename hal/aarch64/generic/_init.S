@@ -41,6 +41,9 @@
 .globl _start
 .type _start, %function
 _start:
+#ifdef PLO_RPI_ACTLED_DIAG
+	bl actled_probe_plo_entry
+#endif
 	mov x0, #0
 	mov x1, #0
 	mov x2, #0
@@ -181,6 +184,57 @@ error_loop:
 	b .
 
 .size _start, .-_start
+
+
+#ifdef PLO_RPI_ACTLED_DIAG
+.macro actled_set_on
+	ldr x0, =PLO_RPI_ACTLED_GPIO_GPFSEL4
+	ldr w1, [x0]
+	mov w2, #(7 << PLO_RPI_ACTLED_SHIFT)
+	bic w1, w1, w2
+	mov w2, #(1 << PLO_RPI_ACTLED_SHIFT)
+	orr w1, w1, w2
+	str w1, [x0]
+
+	ldr x0, =PLO_RPI_ACTLED_GPIO_GPSET1
+	mov w1, #(1 << PLO_RPI_ACTLED_BIT)
+	str w1, [x0]
+.endm
+
+
+.macro actled_set_off
+	ldr x0, =PLO_RPI_ACTLED_GPIO_GPFSEL4
+	ldr w1, [x0]
+	mov w2, #(7 << PLO_RPI_ACTLED_SHIFT)
+	bic w1, w1, w2
+	mov w2, #(1 << PLO_RPI_ACTLED_SHIFT)
+	orr w1, w1, w2
+	str w1, [x0]
+
+	ldr x0, =PLO_RPI_ACTLED_GPIO_GPCLR1
+	mov w1, #(1 << PLO_RPI_ACTLED_BIT)
+	str w1, [x0]
+.endm
+
+
+actled_delay:
+	ldr x0, =PLO_RPI_ACTLED_DELAY
+1:
+	subs x0, x0, #1
+	b.ne 1b
+	ret
+
+
+actled_probe_plo_entry:
+	actled_set_on
+	bl actled_delay
+	actled_set_off
+	bl actled_delay
+	actled_set_on
+	bl actled_delay
+	actled_set_off
+	ret
+#endif
 
 
 .align 4
