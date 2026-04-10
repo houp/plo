@@ -77,11 +77,11 @@
 .endm
 
 
-.macro actled_stage4_inline
-	mov w11, #4
+.macro actled_stage_emit_inline stage
+	mov w11, #\stage
 	actled_entry_set_off
 
-	/* Inline stage 4 so the first proof does not depend on a helper call. */
+	/* Inline fixed-width stage code so earliest proofs avoid helper calls. */
 	actled_entry_set_on
 	actled_entry_delay x9, PLO_RPI_ACTLED_SYNC_TICKS
 	actled_entry_set_off
@@ -111,7 +111,14 @@
 .type _start, %function
 _start:
 #ifdef PLO_RPI_ACTLED_DIAG
-	actled_stage4_inline
+	actled_stage_emit_inline 4
+#endif
+	b _start_real
+
+
+_start_real:
+#ifdef PLO_RPI_ACTLED_DIAG
+	actled_stage_emit_inline 5
 #endif
 	mov x0, #0
 	mov x1, #0
@@ -123,7 +130,7 @@ _start:
 	mov x7, #0
 
 #ifdef PLO_RPI_ACTLED_DIAG
-	mov w0, #5
+	mov w0, #6
 	bl actled_stage_emit
 #endif
 
@@ -137,7 +144,7 @@ _start:
 	mov x15, #0
 
 #ifdef PLO_RPI_ACTLED_DIAG
-	mov w0, #6
+	mov w0, #7
 	bl actled_stage_emit
 #endif
 
@@ -151,7 +158,7 @@ _start:
 	mov x23, #0
 
 #ifdef PLO_RPI_ACTLED_DIAG
-	mov w0, #7
+	mov w0, #8
 	bl actled_stage_emit
 #endif
 
@@ -164,7 +171,7 @@ _start:
 	mov x30, #0
 
 #ifdef PLO_RPI_ACTLED_DIAG
-	mov w0, #8
+	mov w0, #9
 	bl actled_stage_emit
 #endif
 
@@ -172,13 +179,13 @@ _start:
 	isb
 
 #ifdef PLO_RPI_ACTLED_DIAG
-	mov w0, #9
+	mov w0, #10
 	bl actled_stage_emit
 #endif
 
 	mrs x20, currentEL
 #ifdef PLO_RPI_ACTLED_DIAG
-	mov w0, #10
+	mov w0, #11
 	bl actled_stage_emit
 #endif
 	cmp x20, #0xc
@@ -191,7 +198,7 @@ _start:
 
 start_el3:
 #ifdef PLO_RPI_ACTLED_DIAG
-	mov w0, #11
+	mov w0, #12
 	bl actled_stage_emit
 #endif
 	ldr x0, =0x30c50838
@@ -226,7 +233,7 @@ start_el3:
 	tlbi alle3
 
 #ifdef PLO_RPI_ACTLED_DIAG
-	mov w0, #14
+	mov w0, #15
 	bl actled_stage_emit
 #endif
 	b start_common
@@ -234,7 +241,7 @@ start_el3:
 
 start_el2:
 #ifdef PLO_RPI_ACTLED_DIAG
-	mov w0, #12
+	mov w0, #13
 	bl actled_stage_emit
 #endif
 	msr cntvoff_el2, xzr
@@ -258,7 +265,7 @@ start_el2:
 	tlbi alle2
 
 #ifdef PLO_RPI_ACTLED_DIAG
-	mov w0, #15
+	mov w0, #16
 	bl actled_stage_emit
 #endif
 	b start_common
@@ -266,7 +273,7 @@ start_el2:
 
 start_el1:
 #ifdef PLO_RPI_ACTLED_DIAG
-	mov w0, #13
+	mov w0, #14
 	bl actled_stage_emit
 #endif
 	adr x0, _vector_table
@@ -280,13 +287,13 @@ start_el1:
 	tlbi vmalle1
 
 #ifdef PLO_RPI_ACTLED_DIAG
-	mov w0, #16
+	mov w0, #17
 	bl actled_stage_emit
 #endif
 
 start_common:
 #ifdef PLO_RPI_ACTLED_DIAG
-	mov w0, #17
+	mov w0, #18
 	bl actled_stage_emit
 #endif
 	dsb sy
@@ -296,7 +303,7 @@ start_common:
 	mov sp, x1
 
 #ifdef PLO_RPI_ACTLED_DIAG
-	mov w0, #18
+	mov w0, #19
 	bl actled_stage_emit
 #endif
 
@@ -317,7 +324,7 @@ other_core_trap:
 
 start_core_0:
 #ifdef PLO_RPI_ACTLED_DIAG
-	mov w0, #19
+	mov w0, #20
 	bl actled_stage_emit
 #endif
 	adr x1, _startc
@@ -326,7 +333,7 @@ start_core_0:
 
 start_el_unknown:
 #ifdef PLO_RPI_ACTLED_DIAG
-	mov w0, #20
+	mov w0, #21
 	bl actled_stage_emit
 #endif
 
