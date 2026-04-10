@@ -110,15 +110,24 @@
 .globl _start
 .type _start, %function
 _start:
+	b _start_after_signature
+
+
+_start_signature:
+	.word PLO_RPI_FIXED_ENTRY_SIGNATURE0
+	.word PLO_RPI_FIXED_ENTRY_SIGNATURE1
+
+
+_start_after_signature:
 #ifdef PLO_RPI_ACTLED_DIAG
-	actled_stage_emit_inline 4
+	actled_stage_emit_inline 5
 #endif
 	b _start_real
 
 
 _start_real:
 #ifdef PLO_RPI_ACTLED_DIAG
-	actled_stage_emit_inline 5
+	actled_stage_emit_inline 6
 #endif
 	mov x0, #0
 	mov x1, #0
@@ -130,7 +139,7 @@ _start_real:
 	mov x7, #0
 
 #ifdef PLO_RPI_ACTLED_DIAG
-	mov w0, #6
+	mov w0, #7
 	bl actled_stage_emit
 #endif
 
@@ -144,7 +153,7 @@ _start_real:
 	mov x15, #0
 
 #ifdef PLO_RPI_ACTLED_DIAG
-	mov w0, #7
+	mov w0, #8
 	bl actled_stage_emit
 #endif
 
@@ -158,7 +167,7 @@ _start_real:
 	mov x23, #0
 
 #ifdef PLO_RPI_ACTLED_DIAG
-	mov w0, #8
+	mov w0, #9
 	bl actled_stage_emit
 #endif
 
@@ -171,7 +180,7 @@ _start_real:
 	mov x30, #0
 
 #ifdef PLO_RPI_ACTLED_DIAG
-	mov w0, #9
+	mov w0, #10
 	bl actled_stage_emit
 #endif
 
@@ -179,13 +188,13 @@ _start_real:
 	isb
 
 #ifdef PLO_RPI_ACTLED_DIAG
-	mov w0, #10
+	mov w0, #11
 	bl actled_stage_emit
 #endif
 
 	mrs x20, currentEL
 #ifdef PLO_RPI_ACTLED_DIAG
-	mov w0, #11
+	mov w0, #12
 	bl actled_stage_emit
 #endif
 	cmp x20, #0xc
@@ -198,7 +207,7 @@ _start_real:
 
 start_el3:
 #ifdef PLO_RPI_ACTLED_DIAG
-	mov w0, #12
+	mov w0, #13
 	bl actled_stage_emit
 #endif
 	ldr x0, =0x30c50838
@@ -233,7 +242,7 @@ start_el3:
 	tlbi alle3
 
 #ifdef PLO_RPI_ACTLED_DIAG
-	mov w0, #15
+	mov w0, #16
 	bl actled_stage_emit
 #endif
 	b start_common
@@ -241,7 +250,7 @@ start_el3:
 
 start_el2:
 #ifdef PLO_RPI_ACTLED_DIAG
-	mov w0, #13
+	mov w0, #14
 	bl actled_stage_emit
 #endif
 	msr cntvoff_el2, xzr
@@ -265,7 +274,7 @@ start_el2:
 	tlbi alle2
 
 #ifdef PLO_RPI_ACTLED_DIAG
-	mov w0, #16
+	mov w0, #17
 	bl actled_stage_emit
 #endif
 	b start_common
@@ -273,7 +282,7 @@ start_el2:
 
 start_el1:
 #ifdef PLO_RPI_ACTLED_DIAG
-	mov w0, #14
+	mov w0, #15
 	bl actled_stage_emit
 #endif
 	adr x0, _vector_table
@@ -287,13 +296,13 @@ start_el1:
 	tlbi vmalle1
 
 #ifdef PLO_RPI_ACTLED_DIAG
-	mov w0, #17
+	mov w0, #18
 	bl actled_stage_emit
 #endif
 
 start_common:
 #ifdef PLO_RPI_ACTLED_DIAG
-	mov w0, #18
+	mov w0, #19
 	bl actled_stage_emit
 #endif
 	dsb sy
@@ -303,7 +312,7 @@ start_common:
 	mov sp, x1
 
 #ifdef PLO_RPI_ACTLED_DIAG
-	mov w0, #19
+	mov w0, #20
 	bl actled_stage_emit
 #endif
 
@@ -324,7 +333,7 @@ other_core_trap:
 
 start_core_0:
 #ifdef PLO_RPI_ACTLED_DIAG
-	mov w0, #20
+	mov w0, #21
 	bl actled_stage_emit
 #endif
 	adr x1, _startc
@@ -333,7 +342,7 @@ start_core_0:
 
 start_el_unknown:
 #ifdef PLO_RPI_ACTLED_DIAG
-	mov w0, #21
+	mov w0, #22
 	bl actled_stage_emit
 #endif
 
