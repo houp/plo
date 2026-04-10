@@ -38,12 +38,80 @@
 .endm
 
 
+#ifdef PLO_RPI_ACTLED_DIAG
+.macro actled_entry_set_on
+	ldr x0, =PLO_RPI_ACTLED_GPIO_GPFSEL4
+	ldr w1, [x0]
+	mov w2, #(7 << PLO_RPI_ACTLED_SHIFT)
+	bic w1, w1, w2
+	mov w2, #(1 << PLO_RPI_ACTLED_SHIFT)
+	orr w1, w1, w2
+	str w1, [x0]
+
+	ldr x0, =PLO_RPI_ACTLED_GPIO_GPSET1
+	mov w1, #(1 << PLO_RPI_ACTLED_BIT)
+	str w1, [x0]
+.endm
+
+
+.macro actled_entry_set_off
+	ldr x0, =PLO_RPI_ACTLED_GPIO_GPFSEL4
+	ldr w1, [x0]
+	mov w2, #(7 << PLO_RPI_ACTLED_SHIFT)
+	bic w1, w1, w2
+	mov w2, #(1 << PLO_RPI_ACTLED_SHIFT)
+	orr w1, w1, w2
+	str w1, [x0]
+
+	ldr x0, =PLO_RPI_ACTLED_GPIO_GPCLR1
+	mov w1, #(1 << PLO_RPI_ACTLED_BIT)
+	str w1, [x0]
+.endm
+
+
+.macro actled_entry_delay reg, ticks
+	ldr \reg, =\ticks
+991:
+	subs \reg, \reg, #1
+	b.ne 991b
+.endm
+
+
+.macro actled_stage4_inline
+	mov w11, #4
+	actled_entry_set_off
+
+	/* Inline stage 4 so the first proof does not depend on a helper call. */
+	actled_entry_set_on
+	actled_entry_delay x9, PLO_RPI_ACTLED_SYNC_TICKS
+	actled_entry_set_off
+	actled_entry_delay x9, PLO_RPI_ACTLED_SYNC_TICKS
+
+	mov w10, #(1 << (PLO_RPI_ACTLED_CODE_BITS - 1))
+901:
+	actled_entry_set_on
+	tst w11, w10
+	b.eq 902f
+	actled_entry_delay x9, PLO_RPI_ACTLED_LONG_TICKS
+	b 903f
+902:
+	actled_entry_delay x9, PLO_RPI_ACTLED_SHORT_TICKS
+903:
+	actled_entry_set_off
+	actled_entry_delay x9, PLO_RPI_ACTLED_SHORT_TICKS
+	lsr w10, w10, #1
+	cbnz w10, 901b
+
+	actled_entry_delay x9, PLO_RPI_ACTLED_STAGE_GAP_TICKS
+.endm
+#endif
+
+
 .globl _start
 .type _start, %function
 _start:
 #ifdef PLO_RPI_ACTLED_DIAG
-	mov w0, #4
-	bl actled_stage_emit
+	actled_stage4_inline
 #endif
 	mov x0, #0
 	mov x1, #0
