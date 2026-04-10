@@ -53,6 +53,12 @@ _start:
 	mov x5, #0
 	mov x6, #0
 	mov x7, #0
+
+#ifdef PLO_RPI_ACTLED_DIAG
+	mov w0, #5
+	bl actled_stage_emit
+#endif
+
 	mov x8, #0
 	mov x9, #0
 	mov x10, #0
@@ -63,7 +69,7 @@ _start:
 	mov x15, #0
 
 #ifdef PLO_RPI_ACTLED_DIAG
-	mov w0, #5
+	mov w0, #6
 	bl actled_stage_emit
 #endif
 
@@ -75,6 +81,12 @@ _start:
 	mov x21, #0
 	mov x22, #0
 	mov x23, #0
+
+#ifdef PLO_RPI_ACTLED_DIAG
+	mov w0, #7
+	bl actled_stage_emit
+#endif
+
 	mov x24, #0
 	mov x25, #0
 	mov x26, #0
@@ -84,13 +96,21 @@ _start:
 	mov x30, #0
 
 #ifdef PLO_RPI_ACTLED_DIAG
-	mov w0, #6
+	mov w0, #8
+	bl actled_stage_emit
+#endif
+
+	dsb sy
+	isb
+
+#ifdef PLO_RPI_ACTLED_DIAG
+	mov w0, #9
 	bl actled_stage_emit
 #endif
 
 	mrs x20, currentEL
 #ifdef PLO_RPI_ACTLED_DIAG
-	mov w0, #7
+	mov w0, #10
 	bl actled_stage_emit
 #endif
 	cmp x20, #0xc
@@ -103,7 +123,7 @@ _start:
 
 start_el3:
 #ifdef PLO_RPI_ACTLED_DIAG
-	mov w0, #8
+	mov w0, #11
 	bl actled_stage_emit
 #endif
 	ldr x0, =0x30c50838
@@ -136,12 +156,17 @@ start_el3:
 
 	ic iallu
 	tlbi alle3
+
+#ifdef PLO_RPI_ACTLED_DIAG
+	mov w0, #14
+	bl actled_stage_emit
+#endif
 	b start_common
 
 
 start_el2:
 #ifdef PLO_RPI_ACTLED_DIAG
-	mov w0, #9
+	mov w0, #12
 	bl actled_stage_emit
 #endif
 	msr cntvoff_el2, xzr
@@ -163,12 +188,17 @@ start_el2:
 
 	ic iallu
 	tlbi alle2
+
+#ifdef PLO_RPI_ACTLED_DIAG
+	mov w0, #15
+	bl actled_stage_emit
+#endif
 	b start_common
 
 
 start_el1:
 #ifdef PLO_RPI_ACTLED_DIAG
-	mov w0, #10
+	mov w0, #13
 	bl actled_stage_emit
 #endif
 	adr x0, _vector_table
@@ -181,9 +211,14 @@ start_el1:
 	ic iallu
 	tlbi vmalle1
 
+#ifdef PLO_RPI_ACTLED_DIAG
+	mov w0, #16
+	bl actled_stage_emit
+#endif
+
 start_common:
 #ifdef PLO_RPI_ACTLED_DIAG
-	mov w0, #11
+	mov w0, #17
 	bl actled_stage_emit
 #endif
 	dsb sy
@@ -191,6 +226,11 @@ start_common:
 
 	adr x1, _stack
 	mov sp, x1
+
+#ifdef PLO_RPI_ACTLED_DIAG
+	mov w0, #18
+	bl actled_stage_emit
+#endif
 
 	/* Trap all cores except core 0 until the kernel handoff. */
 	adr x1, hal_coreJumpFlag
@@ -209,7 +249,7 @@ other_core_trap:
 
 start_core_0:
 #ifdef PLO_RPI_ACTLED_DIAG
-	mov w0, #12
+	mov w0, #19
 	bl actled_stage_emit
 #endif
 	adr x1, _startc
@@ -218,7 +258,7 @@ start_core_0:
 
 start_el_unknown:
 #ifdef PLO_RPI_ACTLED_DIAG
-	mov w0, #13
+	mov w0, #20
 	bl actled_stage_emit
 #endif
 
@@ -259,8 +299,8 @@ error_loop:
 .endm
 
 
-.macro actled_delay_once reg
-	ldr \reg, =PLO_RPI_ACTLED_TICK_DELAY
+.macro actled_delay_ticks reg, ticks
+	ldr \reg, =\ticks
 991:
 	subs \reg, \reg, #1
 	b.ne 991b
@@ -271,18 +311,29 @@ actled_stage_emit:
 	mov x12, x30
 	mov w11, w0
 	actled_set_off
+
+	/* Sync pulse before the fixed-width stage code. */
+	actled_set_on
+	actled_delay_ticks x9, PLO_RPI_ACTLED_SYNC_TICKS
+	actled_set_off
+	actled_delay_ticks x9, PLO_RPI_ACTLED_SYNC_TICKS
+
+	mov w10, #(1 << (PLO_RPI_ACTLED_CODE_BITS - 1))
 1:
 	actled_set_on
-	actled_delay_once x9
-	actled_set_off
-	actled_delay_once x9
-	subs w11, w11, #1
-	b.ne 1b
-	mov w10, #PLO_RPI_ACTLED_GAP_TICKS
+	tst w11, w10
+	b.eq 2f
+	actled_delay_ticks x9, PLO_RPI_ACTLED_LONG_TICKS
+	b 3f
 2:
-	actled_delay_once x9
-	subs w10, w10, #1
-	b.ne 2b
+	actled_delay_ticks x9, PLO_RPI_ACTLED_SHORT_TICKS
+3:
+	actled_set_off
+	actled_delay_ticks x9, PLO_RPI_ACTLED_SHORT_TICKS
+	lsr w10, w10, #1
+	cbnz w10, 1b
+
+	actled_delay_ticks x9, PLO_RPI_ACTLED_STAGE_GAP_TICKS
 	mov x30, x12
 	ret
 #endif
