@@ -24,6 +24,7 @@ struct {
 } hal_common;
 
 volatile u64 hal_coreJumpFlag;
+volatile addr_t hal_firmwareDtb;
 
 
 /* Linker symbols */

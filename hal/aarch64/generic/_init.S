@@ -24,6 +24,7 @@
 
 .extern hal_common
 .extern hal_coreJumpFlag
+.extern hal_firmwareDtb
 
 
 .macro uart_putc imm
@@ -119,6 +120,7 @@ _start_signature:
 
 
 _start_after_signature:
+	mov x19, x0
 #ifdef PLO_RPI_ACTLED_DIAG
 	actled_stage_emit_inline 5
 #endif
@@ -160,7 +162,6 @@ _start_real:
 	mov x16, #0
 	mov x17, #0
 	mov x18, #0
-	mov x19, #0
 	mov x20, #0
 	mov x21, #0
 	mov x22, #0
@@ -307,6 +308,9 @@ start_common:
 #endif
 	dsb sy
 	isb
+
+	ldr x2, =hal_firmwareDtb
+	str x19, [x2]
 
 	adr x1, _stack
 	mov sp, x1
