@@ -74,6 +74,14 @@ static void hal_printCurrentEl(void)
 }
 
 
+static u32 hal_readBe32(addr_t addr)
+{
+	volatile const u8 *ptr = (const void *)addr;
+
+	return ((u32)ptr[0] << 24) | ((u32)ptr[1] << 16) | ((u32)ptr[2] << 8) | (u32)ptr[3];
+}
+
+
 void hal_init(void)
 {
 	interrupts_init();
@@ -103,6 +111,13 @@ void hal_syspageSet(hal_syspage_t *hs)
 {
 	hal_common.hs = hs;
 	hs->resetReason = 0;
+	hs->firmwareDtb = 0;
+	hs->firmwareDtbSize = 0;
+
+	if ((hal_firmwareDtb != 0u) && (hal_readBe32(hal_firmwareDtb) == 0xd00dfeedu)) {
+		hs->firmwareDtb = hal_firmwareDtb;
+		hs->firmwareDtbSize = hal_readBe32(hal_firmwareDtb + 4u);
+	}
 }
 
 

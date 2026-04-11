@@ -34,8 +34,13 @@
 
 #define UART0_BASE_ADDRESS ((void *)PLO_UART0_BASE_ADDRESS)
 
+#ifndef RAM_ADDR
 #define RAM_ADDR      0x48000000
+#endif
+
+#ifndef RAM_BANK_SIZE
 #define RAM_BANK_SIZE 0x08000000
+#endif
 
 #ifndef __ASSEMBLY__
 
@@ -52,6 +57,8 @@ typedef struct {
 		unsigned long framebuffer; /* addr_t */
 	} __attribute__((packed)) graphmode;
 #endif
+	unsigned long firmwareDtb;     /* addr_t */
+	unsigned long firmwareDtbSize; /* size_t */
 } __attribute__((packed)) hal_syspage_t;
 
 #include <phoenix/syspage.h>
