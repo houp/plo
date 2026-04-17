@@ -366,15 +366,11 @@ static void video_publish(void)
 
 void video_init(void)
 {
-	video_ledPulse(1u);
-
 	if (video_framebufferInit() < 0) {
 		return;
 	}
 
-	video_ledPulse(2u);
 	video_drawSignal();
-	video_ledPulse(3u);
 }
 
 
@@ -386,9 +382,7 @@ void video_publishGraphmode(void)
 
 void video_markHalReady(void)
 {
-	video_ledPulse(4u);
 	video_updateProgress(video_stageHalReady);
-	video_ledPulse(5u);
 }
 
 
@@ -397,6 +391,12 @@ void video_markKernelJump(void)
 	video_ledPulse(6u);
 	video_updateProgress(video_stageKernelJump);
 	video_ledPulse(7u);
+}
+
+
+void video_markKernelHandoff(void)
+{
+	video_ledPulse(8u);
 }
 
 #else
@@ -417,6 +417,11 @@ void video_markHalReady(void)
 
 
 void video_markKernelJump(void)
+{
+}
+
+
+void video_markKernelHandoff(void)
 {
 }
 
