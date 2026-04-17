@@ -88,6 +88,65 @@ static struct {
 };
 
 
+#if defined(PLO_RPI_LED_DIAG) && (PLO_RPI_LED_DIAG != 0) && defined(PLO_RPI_GPIO_BASE_ADDRESS) && (PLO_RPI_GPIO_BASE_ADDRESS != 0)
+enum {
+	video_gpio_gpfsel4 = 0x10 / sizeof(u32),
+	video_gpio_gpset1 = 0x20 / sizeof(u32),
+	video_gpio_gpclr1 = 0x2c / sizeof(u32),
+	video_gpio42_shift = 6u,
+	video_gpio42_mask = 1u << 10,
+	video_led_delay_loops = 25000000u,
+};
+
+
+static volatile u32 *const video_gpio = (volatile u32 *)(addr_t)PLO_RPI_GPIO_BASE_ADDRESS;
+
+
+static void video_ledDelay(unsigned int loops)
+{
+	volatile unsigned int i;
+
+	for (i = 0u; i < loops; ++i) {
+		__asm__ volatile ("nop");
+	}
+}
+
+
+static void video_ledInit(void)
+{
+	u32 val = video_gpio[video_gpio_gpfsel4];
+
+	val &= ~(7u << video_gpio42_shift);
+	val |= 1u << video_gpio42_shift;
+	video_gpio[video_gpio_gpfsel4] = val;
+	video_gpio[video_gpio_gpclr1] = video_gpio42_mask;
+}
+
+
+static void video_ledPulse(unsigned int stage)
+{
+	unsigned int i;
+
+	video_ledInit();
+	video_ledDelay(video_led_delay_loops * 3u);
+
+	for (i = 0u; i < stage; ++i) {
+		video_gpio[video_gpio_gpset1] = video_gpio42_mask;
+		video_ledDelay(video_led_delay_loops);
+		video_gpio[video_gpio_gpclr1] = video_gpio42_mask;
+		video_ledDelay(video_led_delay_loops);
+	}
+
+	video_ledDelay(video_led_delay_loops * 4u);
+}
+#else
+static void video_ledPulse(unsigned int stage)
+{
+	(void)stage;
+}
+#endif
+
+
 #if defined(PLO_RPI_MAILBOX_BUFFER_ADDRESS) && (PLO_RPI_MAILBOX_BUFFER_ADDRESS != 0)
 static volatile u32 *const video_mailbox = (volatile u32 *)(addr_t)PLO_RPI_MAILBOX_BUFFER_ADDRESS;
 #else
@@ -307,11 +366,15 @@ static void video_publish(void)
 
 void video_init(void)
 {
+	video_ledPulse(1u);
+
 	if (video_framebufferInit() < 0) {
 		return;
 	}
 
+	video_ledPulse(2u);
 	video_drawSignal();
+	video_ledPulse(3u);
 }
 
 
@@ -323,13 +386,17 @@ void video_publishGraphmode(void)
 
 void video_markHalReady(void)
 {
+	video_ledPulse(4u);
 	video_updateProgress(video_stageHalReady);
+	video_ledPulse(5u);
 }
 
 
 void video_markKernelJump(void)
 {
+	video_ledPulse(6u);
 	video_updateProgress(video_stageKernelJump);
+	video_ledPulse(7u);
 }
 
 #else
