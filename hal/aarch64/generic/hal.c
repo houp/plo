@@ -49,7 +49,6 @@ extern void video_init(void);
 extern void video_publishGraphmode(void);
 extern void video_markHalReady(void);
 extern void video_markKernelJump(void);
-extern void video_markKernelHandoff(void);
 extern void hal_exitToEL1(void) __attribute__((noreturn));
 
 
@@ -260,7 +259,6 @@ int hal_cpuJump(void)
 	hal_interruptsDisableAll();
 	hal_consolePrint("hal: jump irq off\n");
 	hal_coreJumpFlag = 1;
-	video_markKernelHandoff();
 	hal_consolePrint("hal: jump exit el1\n");
 	hal_exitToEL1();
 
