@@ -15,6 +15,7 @@
 #include <hal/hal.h>
 
 #include "../cpu.h"
+#include "../cache.h"
 
 
 struct {
@@ -247,6 +248,89 @@ void hal_cpuReboot(void)
 }
 
 
+static void hal_printHex64(const char *label, u64 val)
+{
+	static char buf[20];
+	int i;
+
+	hal_consolePrint(label);
+	for (i = 15; i >= 0; --i) {
+		u8 n = (u8)((val >> (i * 4)) & 0xfu);
+		buf[15 - i] = (n < 10u) ? (char)('0' + n) : (char)('a' + n - 10u);
+	}
+	buf[16] = '\n';
+	buf[17] = '\0';
+	hal_consolePrint(buf);
+}
+
+
+/* E1 probe: with plo running cache-off (SCTLR.C=0), two back-to-back loads
+ * over the same DDR range should return identical bytes unless some other
+ * agent (firmware, VideoCore DMA, secondary core) is writing to DDR. Probe
+ * the syspage offset region 0x280..0x340 (where the kernel later observes
+ * bit-flipped map entries) twice with a dsb between, and report any diffs
+ * via UART. If diffs appear, an external writer is proven. */
+static void hal_probeSyspage(void)
+{
+	volatile const u64 *base;
+	u64 snap1[24], snap2[24];
+	int i, diffs = 0;
+	volatile int spin;
+
+	if (hal_common.hs == NULL) {
+		hal_consolePrint("probe: no syspage\n");
+		return;
+	}
+
+	base = (volatile const u64 *)((u8 *)hal_common.hs + 0x280);
+
+	hal_consolePrint("probe: pre-jump read#1\n");
+	for (i = 0; i < 24; ++i) {
+		snap1[i] = base[i];
+	}
+	__asm__ volatile("dsb sy" ::: "memory");
+
+	for (spin = 0; spin < 10000; ++spin) {
+	}
+
+	__asm__ volatile("dsb sy" ::: "memory");
+	for (i = 0; i < 24; ++i) {
+		snap2[i] = base[i];
+	}
+	__asm__ volatile("dsb sy" ::: "memory");
+
+	for (i = 0; i < 24; ++i) {
+		if (snap1[i] != snap2[i]) {
+			++diffs;
+			hal_printHex64("probe diff off=", (u64)(0x280 + i * 8));
+			hal_printHex64("  r1=", snap1[i]);
+			hal_printHex64("  r2=", snap2[i]);
+		}
+	}
+
+	if (diffs == 0) {
+		hal_consolePrint("probe: no diff (DDR stable)\n");
+	}
+	else {
+		hal_consolePrint("probe: external writer detected\n");
+	}
+
+	/* Dump the exact 32 bytes (offset 0x310..0x32F) the kernel B{} field
+	 * shows — so we can compare plo's source vs kernel's copy across boots.
+	 * If these bytes vary across boots while the kernel's B{} also varies
+	 * matching them, plo is feeding uninitialized syspage padding. If
+	 * plo's bytes are stable but kernel's vary, the corruption is on the
+	 * kernel side. */
+	{
+		volatile const u64 *p = (volatile const u64 *)((u8 *)hal_common.hs + 0x310);
+		hal_printHex64("probe[0x310]=", p[0]);
+		hal_printHex64("probe[0x318]=", p[1]);
+		hal_printHex64("probe[0x320]=", p[2]);
+		hal_printHex64("probe[0x328]=", p[3]);
+	}
+}
+
+
 int hal_cpuJump(void)
 {
 	if (hal_common.entry == (addr_t)-1) {
@@ -260,6 +344,19 @@ int hal_cpuJump(void)
 	hal_consolePrint("hal: jump irq off\n");
 	hal_coreJumpFlag = 1;
 	hal_consolePrint("hal: jump exit el1\n");
+
+	/* Clean+invalidate plo's heap (which holds the syspage and everything
+	 * allocated via syspage_alloc) by VA to PoC so every dirty line reaches
+	 * DDR before the kernel takes over. Without this, Cortex-A72 kernel
+	 * reads of plo-written PAs show bit-level nondeterminism — mostly
+	 * deterministic but with some cache lines stranded above DDR. Set/way
+	 * (dc cisw) is documented by ARM as unreliable for inter-observer
+	 * coherency — it only covers L1 and doesn't hit PoC reliably — so we
+	 * must use civac by VA over the heap range. */
+	hal_dcacheFlush((addr_t)__heap_base, (addr_t)__heap_limit);
+
+	hal_probeSyspage();
+
 	hal_exitToEL1();
 
 	hal_consolePrint("hal: jump returned\n");

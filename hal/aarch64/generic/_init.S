@@ -177,6 +177,53 @@ start_common:
 	dsb sy
 	isb
 
+	/* TD-05: drop all data-cache lines across every level up to LoC via
+	 * set/way invalidate-only (dc isw), before plo writes anything. Pi 4
+	 * firmware runs with D-cache enabled and leaves dirty lines for
+	 * arbitrary DDR PAs. plo runs cache-off (SCTLR.{M,C,I}=0), so plo's
+	 * stores go directly to DDR. But firmware's dirty lines (in L1 AND
+	 * L2, since A72's L2 is unified and not fully inclusive of L1) stay
+	 * resident and get evicted later (speculatively, once the kernel
+	 * enables D-cache) on top of plo's DDR data, producing bit-level
+	 * nondeterminism in the syspage bytes the kernel then copies.
+	 * Invalidate-only (not civac) is required: civac would write
+	 * firmware's stale lines back to DDR, clobbering plo's fresh uncached
+	 * writes. Set/way (not VA) because A72 promotes `dc ivac` to civac on
+	 * writable addresses. Safe to drop all lines here: plo reinitializes
+	 * BSS and heap itself, so no reachable data needs to survive. */
+	mrs x16, clidr_el1
+	and x17, x16, #0x7000000  /* LoC << 24 */
+	lsr x17, x17, #23         /* LoC * 2 (csselr level step) */
+	cbz x17, 110f             /* no cache at all? skip */
+	mov x18, #0               /* current csselr value (level<<1 | InD) */
+102:
+	msr csselr_el1, x18
+	isb
+	mrs x0, ccsidr_el1
+	and x2, x0, #0x7          /* log2(line size in words) - 2 */
+	add x2, x2, #4            /* log2(line size in bytes) */
+	ubfx x3, x0, #3, #10      /* associativity - 1 */
+	ubfx x4, x0, #13, #15     /* number of sets - 1 */
+	clz w5, w3                /* bit position for way in set/way operand */
+100:
+	mov x6, x4
+101:
+	lsl x7, x3, x5
+	lsl x8, x6, x2
+	orr x7, x7, x8
+	orr x7, x7, x18           /* level bits [3:1] */
+	dc isw, x7
+	subs x6, x6, #1
+	b.ge 101b
+	subs x3, x3, #1
+	b.ge 100b
+	add x18, x18, #2          /* next level */
+	cmp x18, x17
+	b.lt 102b
+110:
+	dsb sy
+	isb
+
 	ldr x2, =hal_firmwareDtb
 	str x19, [x2]
 
