@@ -331,6 +331,36 @@ static void hal_probeSyspage(void)
 }
 
 
+/* TODO(TD-15-mboxprobe): write a known 64-byte pattern to PA
+ * PLO_RPI_MAILBOX_BUFFER_ADDRESS just before eret. Kernel reads it
+ * back via the NC TTL3 alias added in
+ * phoenix-rtos-kernel/hal/aarch64/_init.S; drift = some agent
+ * (suspected VC4) is writing to ARM-usable DRAM after our last
+ * mailbox call. Pattern: word[i] = 0xa5a5a5a5 ^ (i * 0x01010101).
+ * Plo runs cache-off so a direct store hits DDR; we still issue a
+ * dsb sy + isb to drain. Remove together with the kernel-side
+ * probe once TD-15 phase 1 is done. */
+#if defined(PLO_RPI_MAILBOX_BUFFER_ADDRESS) && (PLO_RPI_MAILBOX_BUFFER_ADDRESS != 0)
+static void hal_td15ProbeWrite(void)
+{
+	volatile u32 *buf = (volatile u32 *)(addr_t)PLO_RPI_MAILBOX_BUFFER_ADDRESS;
+	u32 i;
+	hal_consolePrint("td15: probe write start\n");
+	for (i = 0u; i < 16u; ++i) {
+		buf[i] = 0xa5a5a5a5u ^ (i * 0x01010101u);
+	}
+	__asm__ volatile("dsb sy" ::: "memory");
+	__asm__ volatile("isb" ::: "memory");
+	hal_printHex64("td15: probe write done @ pa=", (u64)PLO_RPI_MAILBOX_BUFFER_ADDRESS);
+}
+#else
+static void hal_td15ProbeWrite(void)
+{
+	hal_consolePrint("td15: probe write skipped (no mailbox buffer addr)\n");
+}
+#endif
+
+
 int hal_cpuJump(void)
 {
 	if (hal_common.entry == (addr_t)-1) {
@@ -356,6 +386,11 @@ int hal_cpuJump(void)
 	hal_dcacheFlush((addr_t)__heap_base, (addr_t)__heap_limit);
 
 	hal_probeSyspage();
+
+	/* TD-15 phase 1: stamp mailbox buffer with known pattern; kernel
+	 * reads it back via NC alias to detect VC4 writes during the
+	 * plo→kernel→main_initthr handoff window. */
+	hal_td15ProbeWrite();
 
 	hal_exitToEL1();
 
