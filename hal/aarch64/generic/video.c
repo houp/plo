@@ -55,6 +55,8 @@ enum {
 	tag_setpxlordr = 0x48006u,
 	tag_getfb = 0x40001u,
 	tag_getpitch = 0x40008u,
+	tag_getclkrate = 0x30002u, /* TD-16-1: get_clock_rate */
+	tag_clkid_arm  = 0x3u,     /* clock ID 3 = ARM core */
 	tag_last = 0u,
 };
 
@@ -305,6 +307,54 @@ static void video_publish(void)
 }
 
 
+/* TD-16-1: query VC4 firmware for the actual ARM core clock rate.
+ * Linux uses RPI_FIRMWARE_GET_CLOCK_RATE (tag 0x30002) with clock id 3
+ * to read the current ARM frequency. We send the same tag and print
+ * the response. If the firmware reports e.g. ~1500 MHz, the CPU is at
+ * full speed and the slowdown is elsewhere. If it reports a much
+ * lower number (e.g. 600 MHz, 200 MHz, or 30 MHz), we have proof
+ * that ARM is throttled and need a set_clock_rate mailbox call (or
+ * arm_freq= in config.txt) to fix it. Remove with the rest of the
+ * TD-16 probes. */
+static void video_td16PrintHex32(const char *label, u32 val)
+{
+	char buf[12];
+	int i;
+	hal_consolePrint(label);
+	for (i = 7; i >= 0; --i) {
+		u8 n = (u8)((val >> (i * 4)) & 0xfu);
+		buf[7 - i] = (n < 10u) ? (char)('0' + n) : (char)('a' + n - 10u);
+	}
+	buf[8] = '\n';
+	buf[9] = '\0';
+	hal_consolePrint(buf);
+}
+
+
+static void video_td16QueryArmFreq(void)
+{
+	hal_memset((void *)video_mailbox, 0, video_mailboxWords * sizeof(u32));
+
+	video_mailbox[0] = 8u * sizeof(u32);
+	video_mailbox[1] = mbox_request;
+
+	video_mailbox[2] = tag_getclkrate;
+	video_mailbox[3] = 8u;            /* response buffer size: 8 bytes (id + rate) */
+	video_mailbox[4] = 0u;            /* request size */
+	video_mailbox[5] = tag_clkid_arm; /* clock id = ARM */
+	video_mailbox[6] = 0u;            /* response: rate in Hz, filled by VC */
+
+	video_mailbox[7] = tag_last;
+
+	if (video_mailboxCall(mbox_chan_prop) < 0) {
+		hal_consolePrint("td16: arm_freq mailbox failed\n");
+		return;
+	}
+
+	video_td16PrintHex32("td16: arm_freq Hz = 0x", video_mailbox[6]);
+}
+
+
 void video_init(void)
 {
 	if (video_framebufferInit() < 0) {
@@ -312,6 +362,7 @@ void video_init(void)
 	}
 
 	video_drawSignal();
+	video_td16QueryArmFreq();
 }
 
 
