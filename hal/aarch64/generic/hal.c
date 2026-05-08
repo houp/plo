@@ -375,15 +375,28 @@ int hal_cpuJump(void)
 	hal_coreJumpFlag = 1;
 	hal_consolePrint("hal: jump exit el1\n");
 
-	/* Clean+invalidate plo's heap (which holds the syspage and everything
-	 * allocated via syspage_alloc) by VA to PoC so every dirty line reaches
-	 * DDR before the kernel takes over. Without this, Cortex-A72 kernel
-	 * reads of plo-written PAs show bit-level nondeterminism — mostly
-	 * deterministic but with some cache lines stranded above DDR. Set/way
-	 * (dc cisw) is documented by ARM as unreliable for inter-observer
-	 * coherency — it only covers L1 and doesn't hit PoC reliably — so we
-	 * must use civac by VA over the heap range. */
-	hal_dcacheFlush((addr_t)__heap_base, (addr_t)__heap_limit);
+	/* Clean+invalidate the entire ARM-usable DDR bank by VA to PoC so every
+	 * dirty line plo may have produced reaches DDR before the kernel takes
+	 * over (with caches OFF, in the current rpi4b config).
+	 *
+	 * Step 2 of the canonical-idiom alignment plan in
+	 * docs/research/round3-cache-enable-synthesis.md §5: the canonical
+	 * Phoenix A-class plo (zynqmp, imx6ull, zynq7000) flushes the full
+	 * DDR (+OCRAM where present) at hal_cpuJump, not just the heap.
+	 * Reference: plo/hal/aarch64/zynqmp/hal.c:258-259.
+	 *
+	 * The earlier heap-only civac was a strict subset and would leave
+	 * other lines stranded once plo runs with caches on (Step 3). The
+	 * heap-only civac was originally added to address Cortex-A72 kernel
+	 * reads of plo-written PAs showing bit-level nondeterminism — that
+	 * fix still holds, just over a wider range now.
+	 *
+	 * Set/way (dc cisw) is documented by ARM as unreliable for
+	 * inter-observer coherency (covers L1 only, doesn't hit PoC), so we
+	 * keep using civac by VA. ADDR_DDR / SIZE_DDR come from
+	 * plo/ld/aarch64a72-generic.ldt via plo/hal/aarch64/generic/config.h.
+	 */
+	hal_dcacheFlush((addr_t)ADDR_DDR, (addr_t)ADDR_DDR + (addr_t)SIZE_DDR);
 
 	hal_probeSyspage();
 
