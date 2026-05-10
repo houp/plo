@@ -15,6 +15,7 @@
 #include <hal/hal.h>
 
 #include "../cpu.h"
+#include "../mmu.h"
 #include "../cache.h"
 
 
@@ -81,6 +82,33 @@ static u32 hal_readBe32(addr_t addr)
 
 	return ((u32)ptr[0] << 24) | ((u32)ptr[1] << 16) | ((u32)ptr[2] << 8) | (u32)ptr[3];
 }
+
+
+/* Step 3 of the canonical-idiom alignment plan was attempted twice
+ * (2026-05-10):
+ *
+ *   1st attempt: bare hal_memoryInit + plo's mmu.c writing *_EL3 regs.
+ *      Hung at relocator's TR3, no plo banner. Diagnosis: plo runs
+ *      at EL2 on rpi4b (armstub drops to EL2), EL3 sysreg writes trap.
+ *
+ *   2nd attempt: Path A (docs/plans/plo-el2-mmu-fix.md) applied —
+ *      plo's mmu.c + cache.c generalised to dispatch on currentEL and
+ *      write the matching sysreg bank. Same TR3-then-silence hang.
+ *      Remaining suspects: TCR_EL2 field layout edge case, sctlr_el2
+ *      baseline from armstub, or another sysreg access along
+ *      mmu_init / mmu_enable that's not yet generalised.
+ *
+ * Step 3 deferred until Step 7 (early-boot diagnostic instrumentation
+ * — docs/plans/early-boot-diagnostic-instrumentation.md) lands and
+ * gives us enough observability to localise the trap.
+ *
+ * Path A generalization (mmu.c + cache.c EL-aware sysreg writes)
+ * REMAINS in tree — it's a clean structural improvement that other
+ * Phoenix A-class targets entering at EL2 will benefit from, and it's
+ * a no-op for EL3-entering targets like zynqmp.
+ *
+ * static void hal_memoryInit(void) — disabled, see above.
+ */
 
 
 void hal_init(void)
@@ -377,24 +405,13 @@ int hal_cpuJump(void)
 
 	/* Clean+invalidate the entire ARM-usable DDR bank by VA to PoC so every
 	 * dirty line plo may have produced reaches DDR before the kernel takes
-	 * over (with caches OFF, in the current rpi4b config).
-	 *
-	 * Step 2 of the canonical-idiom alignment plan in
-	 * docs/research/round3-cache-enable-synthesis.md §5: the canonical
-	 * Phoenix A-class plo (zynqmp, imx6ull, zynq7000) flushes the full
-	 * DDR (+OCRAM where present) at hal_cpuJump, not just the heap.
-	 * Reference: plo/hal/aarch64/zynqmp/hal.c:258-259.
-	 *
-	 * The earlier heap-only civac was a strict subset and would leave
-	 * other lines stranded once plo runs with caches on (Step 3). The
-	 * heap-only civac was originally added to address Cortex-A72 kernel
-	 * reads of plo-written PAs showing bit-level nondeterminism — that
-	 * fix still holds, just over a wider range now.
+	 * over (with caches OFF, in the current rpi4b config — Step 3
+	 * deferred until early-boot instrumentation localises the
+	 * TR3-then-silence hang). The flush is a no-op while plo runs
+	 * caches-off; it becomes load-bearing once Step 3 lands.
 	 *
 	 * Set/way (dc cisw) is documented by ARM as unreliable for
-	 * inter-observer coherency (covers L1 only, doesn't hit PoC), so we
-	 * keep using civac by VA. ADDR_DDR / SIZE_DDR come from
-	 * plo/ld/aarch64a72-generic.ldt via plo/hal/aarch64/generic/config.h.
+	 * inter-observer coherency, so we keep using civac by VA.
 	 */
 	hal_dcacheFlush((addr_t)ADDR_DDR, (addr_t)ADDR_DDR + (addr_t)SIZE_DDR);
 

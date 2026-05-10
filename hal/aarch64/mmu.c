@@ -48,11 +48,27 @@ static u64 ttl1[4] __attribute__((aligned(64)));
 static u64 ttl2[4][512] __attribute__((aligned(SIZE_PAGE)));
 
 
+/* Path A of docs/plans/plo-el2-mmu-fix.md: detect current EL at
+ * runtime and write the appropriate sysreg bank. On rpi4b the
+ * armstub (phoenix-armstub8-rpi4.S) drops plo to EL2; on zynqmp
+ * plo stays at EL3. Both targets share this file, so each access
+ * dispatches on currentEL[3:2].
+ */
+static inline unsigned mmu_currentEL(void)
+{
+	return (unsigned)(sysreg_read(currentEL) & 0xcU);
+}
+
+
 static inline void mmu_invalTLB(void)
 {
 	hal_cpuDataSyncBarrier();
 	/* clang-format off */
-	asm volatile ("tlbi alle3");
+	switch (mmu_currentEL()) {
+		case 0xcU: asm volatile ("tlbi alle3"   ::: "memory"); break;
+		case 0x8U: asm volatile ("tlbi alle2"   ::: "memory"); break;
+		default:   asm volatile ("tlbi vmalle1" ::: "memory"); break;
+	}
 	/* clang-format on */
 	hal_cpuDataSyncBarrier();
 	hal_cpuInstrBarrier();
@@ -62,11 +78,45 @@ static inline void mmu_invalTLB(void)
 static inline void mmu_setTranslationRegs(u64 ttbr0, u64 tcr, u64 mair)
 {
 	hal_cpuDataSyncBarrier();
-	sysreg_write(ttbr0_el3, ttbr0);
-	sysreg_write(tcr_el3, tcr);
-	sysreg_write(mair_el3, mair);
+	switch (mmu_currentEL()) {
+		case 0xcU:
+			sysreg_write(ttbr0_el3, ttbr0);
+			sysreg_write(tcr_el3, tcr);
+			sysreg_write(mair_el3, mair);
+			break;
+		case 0x8U:
+			sysreg_write(ttbr0_el2, ttbr0);
+			sysreg_write(tcr_el2, tcr);
+			sysreg_write(mair_el2, mair);
+			break;
+		default:
+			sysreg_write(ttbr0_el1, ttbr0);
+			sysreg_write(tcr_el1, tcr);
+			sysreg_write(mair_el1, mair);
+			break;
+	}
 	hal_cpuDataSyncBarrier();
 	hal_cpuInstrBarrier();
+}
+
+
+static inline u64 mmu_readSctlr(void)
+{
+	switch (mmu_currentEL()) {
+		case 0xcU: return sysreg_read(sctlr_el3);
+		case 0x8U: return sysreg_read(sctlr_el2);
+		default:   return sysreg_read(sctlr_el1);
+	}
+}
+
+
+static inline void mmu_writeSctlr(u64 val)
+{
+	switch (mmu_currentEL()) {
+		case 0xcU: sysreg_write(sctlr_el3, val); break;
+		case 0x8U: sysreg_write(sctlr_el2, val); break;
+		default:   sysreg_write(sctlr_el1, val); break;
+	}
 }
 
 
@@ -74,9 +124,9 @@ void mmu_enable(void)
 {
 	u64 val;
 	hal_cpuDataSyncBarrier();
-	val = sysreg_read(sctlr_el3);
+	val = mmu_readSctlr();
 	val |= ((1 << 12) | (1 << 2) | (1 << 0));
-	sysreg_write(sctlr_el3, val);
+	mmu_writeSctlr(val);
 	hal_cpuDataSyncBarrier();
 	hal_cpuInstrBarrier();
 }
@@ -86,9 +136,9 @@ void mmu_disable(void)
 {
 	u64 val;
 	hal_cpuDataSyncBarrier();
-	val = sysreg_read(sctlr_el3);
+	val = mmu_readSctlr();
 	val &= ~((1 << 12) | (1 << 2) | (1 << 0));
-	sysreg_write(sctlr_el3, val);
+	mmu_writeSctlr(val);
 	hal_cpuDataSyncBarrier();
 	hal_cpuInstrBarrier();
 	mmu_invalTLB();
@@ -122,7 +172,11 @@ void mmu_mapAddr(addr_t paddr, addr_t vaddr, unsigned int flags)
 	hal_cpuDataSyncBarrier();
 	hal_cpuInstrBarrier();
 	/* clang-format off */
-	asm volatile ("tlbi vae3, %0" :: "r"(vaddr));
+	switch (mmu_currentEL()) {
+		case 0xcU: asm volatile ("tlbi vae3, %0" :: "r"(vaddr) : "memory"); break;
+		case 0x8U: asm volatile ("tlbi vae2, %0" :: "r"(vaddr) : "memory"); break;
+		default:   asm volatile ("tlbi vae1, %0" :: "r"(vaddr) : "memory"); break;
+	}
 	/* clang-format on */
 }
 
