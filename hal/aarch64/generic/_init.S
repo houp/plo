@@ -138,22 +138,60 @@ start_el3:
 
 
 start_el2:
+	/* Defense-in-depth: mask all asynchronous classes (DAIF) before
+	 * any state writes. Linux + U-Boot rely on a clean precondition
+	 * from the prior stage; the rpi4 armstub does not guarantee one. */
+	msr daifSet, #0xf
+
 	msr cntvoff_el2, xzr
 	mov x0, #0x3
 	msr cnthctl_el2, x0
-	msr cptr_el2, xzr
-	ldr x0, =0x30c00838
+	/* CPTR_EL2 = 0x33ff matches U-Boot + Linux nVHE: FP/SIMD trap
+	 * disabled, RES1 bits set. On A72 the hardware forces RES1 bits
+	 * on read-back so semantically equivalent to writing 0, but
+	 * writing 0 to RES1 is CONSTRAINED-UNPREDICTABLE prior to ARMv8.2. */
+	mov x0, #0x33ff
+	msr cptr_el2, x0
+	/* SCTLR_EL2 baseline 0x30c50838: SCTLR_EL2 RES1 bits for A72 r0p3
+	 * (29, 28, 23, 22, 18, 16, 11, 5, 4). Previous baseline 0x30c00838
+	 * missed bit 18 in the write; HW forces it on read-back so prior
+	 * boots survived, but mainline writes the architecturally correct
+	 * value. */
+	ldr x0, =0x30c50838
 	msr sctlr_el2, x0
 	msr sctlr_el1, xzr
 	msr vttbr_el2, xzr
 
+	/* MDCR_EL2 / HSTR_EL2 — UNKNOWN at reset on A72. Linux's
+	 * __init_el2_debug always clears MDCR_EL2 (no debug traps to
+	 * EL2 from EL1); __init_el2_hstr always clears HSTR_EL2 (no
+	 * CP15 traps to EL2). Leaving them UNKNOWN can surface as
+	 * speculative-debug-uop traps that the CPU may report with
+	 * EC=0x00 (matches our observed fault class). */
+	msr mdcr_el2, xzr
+	msr hstr_el2, xzr
+
+	/* Mirror MIDR_EL1 -> VPIDR_EL2, MPIDR_EL1 -> VMPIDR_EL2 so
+	 * any EL1 code (now or after a future drop) reads sane IDs. */
+	mrs x0, midr_el1
+	msr vpidr_el2, x0
+	mrs x0, mpidr_el1
+	msr vmpidr_el2, x0
+
 	mov x0, #0b1110011
 	msr actlr_el2, x0
-	mov x0, #((1 << 31) | (1 << 29))
+	/* HCR_EL2 = RW(31) | ATA(29) | AMO(5) | IMO(4) | FMO(3).
+	 * AMO/IMO/FMO route physical SError/IRQ/FIQ to EL2 instead of
+	 * EL1. plo runs at EL2 with no EL1 active; without these bits an
+	 * SError targets EL1 and lands in CONSTRAINED-UNPREDICTABLE
+	 * territory (top hypothesis for the EC=0x00 fault we observe).
+	 * Constant 0xa0000038 doesn't fit a single MOV imm; use ldr =. */
+	ldr x0, =0xa0000038
 	msr hcr_el2, x0
 
 	adr x0, _vector_table
 	msr vbar_el2, x0
+	isb
 
 	ic iallu
 	tlbi alle2
@@ -305,55 +343,196 @@ exit_el1:
 #include "../_interrupts.S"
 #include "../_exceptions.S"
 
+/* TD-diag: every vector slot prints a unique tag char then halts, so
+ * we can SEE which exception class fires instead of silently looping
+ * on `b .` or trapping deeper on _exceptions_dispatch's EL3-only sysreg
+ * accesses. Tag mapping:
+ *   A 000  SP_EL0 sync     B 080  SP_EL0 irq     C 100  SP_EL0 fiq    D 180  SP_EL0 serror
+ *   E 200  SPx    sync     F 280  SPx    irq     G 300  SPx    fiq    H 380  SPx    serror
+ *   I 400  L-EL64 sync     J 480  L-EL64 irq     K 500  L-EL64 fiq    L 580  L-EL64 serror
+ *   M 600  L-EL32 sync     N 680  L-EL32 irq     O 700  L-EL32 fiq    P 780  L-EL32 serror
+ * Each slot prints "EXC" then the tag, then halts. After diagnosis we
+ * either fix the offending exception cause or restore the original
+ * vector table.
+ */
+.macro exc_tag tag
+	uart_putc \tag
+	uart_putc '\n'
+	b .
+.endm
+
+/* Print one ASCII hex nibble for the low 4 bits of w4. */
+.macro uart_put_hexnibble
+	and w4, w4, #0xf
+	cmp w4, #10
+	b.lo 992f
+	add w4, w4, #('a' - 10)
+	b 993f
+992:
+	add w4, w4, #'0'
+993:
+	ldr x3, =(PLO_UART0_BASE_ADDRESS + UARTFR_OFFSET)
+994:
+	ldr w5, [x3]
+	tst w5, #UARTFR_TXFF
+	b.ne 994b
+	ldr x3, =PLO_UART0_BASE_ADDRESS
+	str w4, [x3]
+.endm
+
+/* Print a 64-bit reg in x6 as 16 hex chars (high nibble first), no newline. */
+.globl uart_put_hex64
+.type uart_put_hex64, %function
+uart_put_hex64:
+	mov x7, #60
+995:
+	lsr x4, x6, x7
+	uart_put_hexnibble
+	cbz x7, 996f
+	sub x7, x7, #4
+	b 995b
+996:
+	ret
+.size uart_put_hex64, .-uart_put_hex64
+
+/* Slot-E (Sync at Current EL with SPx) full diagnostic. Reads EL2
+ * exception registers (ESR_EL2, ELR_EL2, FAR_EL2, SPSR_EL2) and prints
+ * them as hex. ARM ARM D13.2.36: ESR.EC[31:26] decodes the fault class.
+ * Most likely cases for our boot:
+ *   0x26 = SP alignment fault    (matches the SCTLR_EL2.SA=1 + RES1
+ *                                 missing-bits hypothesis)
+ *   0x25 = Data abort same EL    (DFSC field then narrows it)
+ *   0x2f = SError                 (latent from armstub/VC4)
+ *   0x18 = MSR/MRS trap          (would mean dispatcher EL3-reg)
+ */
+.globl _slot_e_dump
+.type _slot_e_dump, %function
+_slot_e_dump:
+	uart_putc 'E'
+	uart_putc '\n'
+	uart_putc 'E'
+	uart_putc 'S'
+	uart_putc 'R'
+	uart_putc '='
+	mrs x6, esr_el2
+	bl uart_put_hex64
+	uart_putc '\n'
+	uart_putc 'E'
+	uart_putc 'L'
+	uart_putc 'R'
+	uart_putc '='
+	mrs x6, elr_el2
+	bl uart_put_hex64
+	uart_putc '\n'
+	uart_putc 'F'
+	uart_putc 'A'
+	uart_putc 'R'
+	uart_putc '='
+	mrs x6, far_el2
+	bl uart_put_hex64
+	uart_putc '\n'
+	uart_putc 'S'
+	uart_putc 'P'
+	uart_putc 'R'
+	uart_putc '='
+	mrs x6, spsr_el2
+	bl uart_put_hex64
+	uart_putc '\n'
+	uart_putc 'S'
+	uart_putc 'C'
+	uart_putc 'T'
+	uart_putc '='
+	mrs x6, sctlr_el2
+	bl uart_put_hex64
+	uart_putc '\n'
+
+	/* TTBR0_EL2 / TCR_EL2 / MAIR_EL2 — verify translation setup. */
+	uart_putc 'T'
+	uart_putc 'T'
+	uart_putc 'B'
+	uart_putc '='
+	mrs x6, ttbr0_el2
+	bl uart_put_hex64
+	uart_putc '\n'
+	uart_putc 'T'
+	uart_putc 'C'
+	uart_putc 'R'
+	uart_putc '='
+	mrs x6, tcr_el2
+	bl uart_put_hex64
+	uart_putc '\n'
+	uart_putc 'M'
+	uart_putc 'A'
+	uart_putc 'R'
+	uart_putc '='
+	mrs x6, mair_el2
+	bl uart_put_hex64
+	uart_putc '\n'
+
+	/* Read 4 instruction bytes at ELR_EL2. If these match the static
+	 * disassembly (0x911c6000 for `add x0, x0, #0x718`) the I-cache is
+	 * NOT the culprit and EC=0 must come from elsewhere. If they
+	 * don't match, I-cache aliasing is proven. */
+	uart_putc 'I'
+	uart_putc 'N'
+	uart_putc 'S'
+	uart_putc '='
+	mrs x8, elr_el2
+	ldr w6, [x8]                /* writing w6 zero-extends to x6 */
+	bl uart_put_hex64
+	uart_putc '\n'
+	b .
+.size _slot_e_dump, .-_slot_e_dump
+
 .align 11
 .globl _vector_table
 _vector_table:
 .org(_vector_table)
-	b .
+	exc_tag 'A'
 
 .org (_vector_table + 0x80)
-	b .
+	exc_tag 'B'
 
 .org (_vector_table + 0x100)
-	b .
+	exc_tag 'C'
 
 .org (_vector_table + 0x180)
-	b .
+	exc_tag 'D'
 
 .org (_vector_table + 0x200)
-	b _exceptions_dispatch
+	b _slot_e_dump
 
 .org (_vector_table + 0x280)
-	b _interrupts_dispatch
+	exc_tag 'F'
 
 .org (_vector_table + 0x300)
-	b _interrupts_dispatch
+	exc_tag 'G'
 
 .org (_vector_table + 0x380)
-	b _exceptions_dispatch
+	exc_tag 'H'
 
 .org (_vector_table + 0x400)
-	b .
+	exc_tag 'I'
 
 .org (_vector_table + 0x480)
-	b .
+	exc_tag 'J'
 
 .org (_vector_table + 0x500)
-	b .
+	exc_tag 'K'
 
 .org (_vector_table + 0x580)
-	b .
+	exc_tag 'L'
 
 .org (_vector_table + 0x600)
-	b .
+	exc_tag 'M'
 
 .org (_vector_table + 0x680)
-	b .
+	exc_tag 'N'
 
 .org (_vector_table + 0x700)
-	b .
+	exc_tag 'O'
 
 .org (_vector_table + 0x780)
-	b .
+	exc_tag 'P'
 
 .org (_vector_table + 0x800)

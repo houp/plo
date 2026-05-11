@@ -77,6 +77,8 @@ static inline void mmu_invalTLB(void)
 
 static inline void mmu_setTranslationRegs(u64 ttbr0, u64 tcr, u64 mair)
 {
+	u64 tcr_el2_val;
+
 	hal_cpuDataSyncBarrier();
 	switch (mmu_currentEL()) {
 		case 0xcU:
@@ -85,8 +87,17 @@ static inline void mmu_setTranslationRegs(u64 ttbr0, u64 tcr, u64 mair)
 			sysreg_write(mair_el3, mair);
 			break;
 		case 0x8U:
+			/* TCR_EL2 (non-VHE) field layout differs from TCR_EL1:
+			 *   - bit 23 (EPD1 in EL1) is RES0 here — must be cleared.
+			 *   - IPS/PS sits at bits 18:16 in TCR_EL2, not 34:32 like
+			 *     EL1.IPS. The caller computes TCR with EL1 conventions
+			 *     (mmu_init sets bit 23 + places PS at 34:32); we
+			 *     translate to the EL2 layout here.
+			 */
+			tcr_el2_val = tcr & ~((1uL << 23) | ((u64)0x7 << 32));
+			tcr_el2_val |= ((tcr >> 32) & 0x7) << 16;
 			sysreg_write(ttbr0_el2, ttbr0);
-			sysreg_write(tcr_el2, tcr);
+			sysreg_write(tcr_el2, tcr_el2_val);
 			sysreg_write(mair_el2, mair);
 			break;
 		default:
@@ -123,12 +134,39 @@ static inline void mmu_writeSctlr(u64 val)
 void mmu_enable(void)
 {
 	u64 val;
+
+	/* Pre-flip canonical barrier ritual for the MMU+caches transition,
+	 * mirroring Linux's set_sctlr and the BSDs:
+	 *   - ic ialluis + dsb ish to drop any speculatively-prefetched
+	 *     I-cache lines before SCTLR.I=1
+	 *   - tlbi (handled by mmu_invalTLB) — armstub left TLB state
+	 *   - dsb sy + isb
+	 */
+	/* clang-format off */
+	asm volatile (
+		"ic   ialluis\n"
+		"dsb  ish\n"
+		"isb\n"
+		::: "memory");
+	/* clang-format on */
+	mmu_invalTLB();
+
 	hal_cpuDataSyncBarrier();
 	val = mmu_readSctlr();
 	val |= ((1 << 12) | (1 << 2) | (1 << 0));
 	mmu_writeSctlr(val);
-	hal_cpuDataSyncBarrier();
 	hal_cpuInstrBarrier();
+
+	/* Post-flip: invalidate any stale lines fetched while M=0/C=0/I=0
+	 * was in effect that may now alias the cacheable mappings we just
+	 * activated. */
+	/* clang-format off */
+	asm volatile (
+		"ic   ialluis\n"
+		"dsb  ish\n"
+		"isb\n"
+		::: "memory");
+	/* clang-format on */
 }
 
 

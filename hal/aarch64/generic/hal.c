@@ -84,41 +84,113 @@ static u32 hal_readBe32(addr_t addr)
 }
 
 
-/* Step 3 of the canonical-idiom alignment plan was attempted twice
- * (2026-05-10):
+/* Diagnostic instrumentation for Step 3 (plo MMU+caches ON) bisection.
  *
- *   1st attempt: bare hal_memoryInit + plo's mmu.c writing *_EL3 regs.
- *      Hung at relocator's TR3, no plo banner. Diagnosis: plo runs
- *      at EL2 on rpi4b (armstub drops to EL2), EL3 sysreg writes trap.
+ * Step 3 has failed twice with the same TR3-then-silence hang despite
+ * Path A's EL-aware generalisation of mmu.c + cache.c. To localise the
+ * remaining EL2-specific trap we re-enable Step 3 here, instrument
+ * each sub-step with hal_consolePrint markers, and reorder hal_init
+ * so console_init runs BEFORE hal_memoryInit (caches-off PL011 MMIO
+ * writes work without MMU).
  *
- *   2nd attempt: Path A (docs/plans/plo-el2-mmu-fix.md) applied —
- *      plo's mmu.c + cache.c generalised to dispatch on currentEL and
- *      write the matching sysreg bank. Same TR3-then-silence hang.
- *      Remaining suspects: TCR_EL2 field layout edge case, sctlr_el2
- *      baseline from armstub, or another sysreg access along
- *      mmu_init / mmu_enable that's not yet generalised.
+ * Expected post-fix UART output:
+ *   "mem: pre-init\n" / "mem: pre-enable\n" / "mem: post-enable\n"
  *
- * Step 3 deferred until Step 7 (early-boot diagnostic instrumentation
- * — docs/plans/early-boot-diagnostic-instrumentation.md) lands and
- * gives us enough observability to localise the trap.
- *
- * Path A generalization (mmu.c + cache.c EL-aware sysreg writes)
- * REMAINS in tree — it's a clean structural improvement that other
- * Phoenix A-class targets entering at EL2 will benefit from, and it's
- * a no-op for EL3-entering targets like zynqmp.
- *
- * static void hal_memoryInit(void) — disabled, see above.
+ * Whichever marker DOES print and which one does NOT will tell us
+ * which sysreg write hangs.
  */
+static void hal_memoryInit(void)
+{
+	size_t sz;
+	addr_t addr;
+
+	hal_consolePrint("mem: pre-init\n");
+	mmu_init();
+	hal_consolePrint("mem: post-init\n");
+
+	for (sz = 0; sz < (size_t)SIZE_DDR; sz += SIZE_MMU_SECTION_REGION) {
+		addr = (addr_t)ADDR_DDR + sz;
+		mmu_mapAddr(addr, addr, MMU_FLAG_CACHED);
+	}
+	hal_consolePrint("mem: post-map\n");
+
+	/* Try MMU only (M=1, C=I=0) first to test if just translation works
+	 * before enabling caches. */
+	{
+		u64 val;
+
+		/* Pre-flip cleanup. */
+		asm volatile (
+			"ic   ialluis\n"
+			"dsb  ish\n"
+			"isb\n"
+			::: "memory");
+
+		hal_consolePrint("mem: pre-tlbi\n");
+		asm volatile ("tlbi alle2; dsb ish; isb" ::: "memory");
+		hal_consolePrint("mem: post-tlbi\n");
+
+		/* NOTE: hal_dcacheInvalAll() here uses `dc cisw` which can
+		 * write back ARBITRARY dirty lines left by boot ROM/armstub
+		 * — those writes may LAND on top of our freshly populated
+		 * page tables in DRAM. Skip it; kernel handles the canonical
+		 * inval-by-set-way later. */
+
+		asm volatile ("mrs %0, sctlr_el2" : "=r"(val));
+		hal_consolePrint("mem: post-read-sctlr\n");
+
+		val |= (1uL << 0);  /* M only first */
+
+		hal_consolePrint("mem: pre-sctlr-write-M\n");
+		asm volatile ("msr sctlr_el2, %0; isb" :: "r"(val) : "memory");
+		hal_consolePrint("mem: post-sctlr-write-M\n");
+
+		/* Now try to add I (instruction cache). */
+		val |= (1uL << 12);
+		hal_consolePrint("mem: pre-sctlr-write-MI\n");
+		asm volatile ("msr sctlr_el2, %0; isb" :: "r"(val) : "memory");
+		hal_consolePrint("mem: post-sctlr-write-MI\n");
+
+		/* Finally add C (data cache). */
+		val |= (1uL << 2);
+		hal_consolePrint("mem: pre-sctlr-write-MIC\n");
+		asm volatile ("msr sctlr_el2, %0; isb" :: "r"(val) : "memory");
+		hal_consolePrint("mem: post-sctlr-write-MIC\n");
+
+		/* Post-flip I-cache invalidate. Per ARM ARM D5.10.2 the
+		 * `dc isw` pass plo did at start_common is for power-down,
+		 * NOT for I/D coherency. After SCTLR.I=1 we may speculatively
+		 * fetch lines that disagree with what's in RAM. The cure
+		 * (per the Pi 4 community reports and OSv issue 1100 that
+		 * showed an identical EC=0x00 sync-abort pattern at an
+		 * otherwise-benign instruction) is to invalidate the I-cache
+		 * once after enabling it. If this is insufficient we will
+		 * add per-VA-line `dc cvau`+`ic ivau` over plo's .text. */
+		asm volatile (
+			"ic iallu\n"
+			"dsb ish\n"
+			"isb\n"
+			::: "memory");
+		hal_consolePrint("mem: post-icache-inval\n");
+	}
+	hal_consolePrint("mem: post-enable\n");
+}
 
 
 void hal_init(void)
 {
 	interrupts_init();
+	console_init();           /* moved BEFORE hal_memoryInit for diag prints */
+	hal_consolePrint("hal: console_init done\n");
+	hal_memoryInit();
+	hal_consolePrint("hal: hal_memoryInit done\n");
 	timer_init();
-	console_init();
+	hal_consolePrint("hal: timer_init done\n");
 	video_init();
+	hal_consolePrint("hal: video_init done\n");
 	hal_printCurrentEl();
 	video_markHalReady();
+	hal_consolePrint("hal: init complete\n");
 
 	hal_common.entry = (addr_t)-1;
 }
@@ -403,17 +475,16 @@ int hal_cpuJump(void)
 	hal_coreJumpFlag = 1;
 	hal_consolePrint("hal: jump exit el1\n");
 
-	/* Clean+invalidate the entire ARM-usable DDR bank by VA to PoC so every
-	 * dirty line plo may have produced reaches DDR before the kernel takes
-	 * over (with caches OFF, in the current rpi4b config — Step 3
-	 * deferred until early-boot instrumentation localises the
-	 * TR3-then-silence hang). The flush is a no-op while plo runs
-	 * caches-off; it becomes load-bearing once Step 3 lands.
-	 *
-	 * Set/way (dc cisw) is documented by ARM as unreliable for
-	 * inter-observer coherency, so we keep using civac by VA.
-	 */
+	/* Tear down the cacheable execution environment hal_memoryInit() set
+	 * up, mirroring the canonical zynqmp pattern at
+	 * plo/hal/aarch64/zynqmp/hal.c:255-266. Order: drop D-cache enable
+	 * first, civac entire DDR (so no further fills can race the flush),
+	 * drop I-cache, invalidate I-cache, then mmu_disable. */
+	hal_dcacheEnable(0);
 	hal_dcacheFlush((addr_t)ADDR_DDR, (addr_t)ADDR_DDR + (addr_t)SIZE_DDR);
+	hal_icacheEnable(0);
+	hal_icacheInval();
+	mmu_disable();
 
 	hal_probeSyspage();
 

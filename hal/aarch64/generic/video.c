@@ -98,18 +98,32 @@ static volatile u32 *const video_mailbox = video_mailboxStorage;
 #endif
 
 
+static void video_td16PrintHex32(const char *label, u32 val);
+
+
 static int video_mailboxCall(unsigned int chan)
 {
 	u32 msg;
 
 	msg = (((u32)(addr_t)video_mailbox) & ~0xfu) | (chan & 0xfu);
 
+	hal_consolePrint("mbox: pre-clean\n");
 	hal_dcacheClean((addr_t)video_mailbox, (addr_t)video_mailbox + video_mailboxWords * sizeof(u32));
+	hal_consolePrint("mbox: post-clean\n");
 
-	while ((*(video_common.mailbox + mbox_status) & mbox_full) != 0u) {
+	/* Diagnostic: print mbox_status once (without busy-wait) to see
+	 * what we actually read. mbox_full = 0x80000000, mbox_empty = 0x40000000. */
+	{
+		u32 status0 = *(video_common.mailbox + mbox_status);
+		video_td16PrintHex32("mbox: status0=0x", status0);
 	}
 
+	hal_consolePrint("mbox: skip-wait\n");
+
+	/* status0 above showed full=0; skip the busy-wait and try to write directly. */
+	hal_consolePrint("mbox: pre-write\n");
 	*(video_common.mailbox + mbox_write) = msg;
+	hal_consolePrint("mbox: write-done\n");
 
 	for (;;) {
 		while ((*(video_common.mailbox + mbox_status) & mbox_empty) != 0u) {
@@ -119,8 +133,10 @@ static int video_mailboxCall(unsigned int chan)
 			break;
 		}
 	}
+	hal_consolePrint("mbox: read-done\n");
 
 	hal_dcacheInval((addr_t)video_mailbox, (addr_t)video_mailbox + video_mailboxWords * sizeof(u32));
+	hal_consolePrint("mbox: post-inval\n");
 
 	return (video_mailbox[1] == mbox_response) ? 0 : -1;
 }
@@ -128,7 +144,9 @@ static int video_mailboxCall(unsigned int chan)
 
 static int video_framebufferInit(void)
 {
+	hal_consolePrint("fb: enter\n");
 	hal_memset((void *)video_mailbox, 0, video_mailboxWords * sizeof(u32));
+	hal_consolePrint("fb: post-memset\n");
 
 	video_mailbox[0] = 35u * sizeof(u32);
 	video_mailbox[1] = mbox_request;
@@ -357,12 +375,17 @@ static void video_td16QueryArmFreq(void)
 
 void video_init(void)
 {
+	hal_consolePrint("video: pre-fbInit\n");
 	if (video_framebufferInit() < 0) {
+		hal_consolePrint("video: fbInit failed\n");
 		return;
 	}
+	hal_consolePrint("video: post-fbInit\n");
 
 	video_drawSignal();
+	hal_consolePrint("video: post-drawSignal\n");
 	video_td16QueryArmFreq();
+	hal_consolePrint("video: post-armFreq\n");
 }
 
 
