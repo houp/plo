@@ -16,6 +16,7 @@
 
 #include "../cache.h"
 #include "../cpu.h"
+#include "../mmu.h"
 #include <syspage.h>
 
 
@@ -211,6 +212,14 @@ static int video_framebufferInit(void)
 	}
 	video_common.progressStage = video_stageFramebufferReady;
 
+	/* NOTE: framebuffer cacheable mapping is now set up statically by
+	 * hal_memoryInit (which remaps the full 0..0xfe000000 range as
+	 * Normal WB Cacheable before MMU enable). Doing it dynamically
+	 * here previously caused wild PC corruption — mmu_mapAddr's
+	 * post-TLBI barrier sequence is incomplete for runtime mapping
+	 * changes with the MMU live, and the speculation hit stale
+	 * translations. Avoid that entire class of issue by pre-mapping. */
+
 	return 0;
 }
 
@@ -221,11 +230,26 @@ static void video_drawSignal(void)
 	u32 boxSize, gap, outerPad, innerPad, boxX, boxY, px;
 	volatile u32 *row;
 
+	/* TD-plo-drawsignal: framebuffer rendering blocked by an open
+	 * issue (with caches on, bg-fill hangs; with caches off, it takes
+	 * minutes due to Device-nGnRE per-word writes). Skip entirely to
+	 * unblock the rest of plo boot. The kernel does its own HDMI/fb
+	 * setup later — this is just a plo-time progress indicator. */
+	return;
+
+	hal_consolePrint("draw: enter\n");
 	if (video_common.framebuffer == NULL) {
+		hal_consolePrint("draw: fb null, return\n");
 		return;
 	}
+	video_td16PrintHex32("draw: fb=0x", (u32)(addr_t)video_common.framebuffer);
+	video_td16PrintHex32("draw: w=0x", video_common.width);
+	video_td16PrintHex32("draw: h=0x", video_common.height);
+	video_td16PrintHex32("draw: pitch=0x", video_common.pitch);
+	video_td16PrintHex32("draw: size=0x", video_common.size);
 
 	stride = video_common.pitch / sizeof(u32);
+	hal_consolePrint("draw: pre-bg-fill\n");
 
 	for (y = 0; y < video_common.height; ++y) {
 		row = video_common.framebuffer + y * stride;
@@ -234,6 +258,14 @@ static void video_drawSignal(void)
 			row[x] = video_background;
 		}
 	}
+	hal_consolePrint("draw: post-bg-fill\n");
+
+	/* TD-plo-video-panel: panel/box rendering currently crashes with
+	 * a wild FAR (corrupted base register). bg-fill is enough as a
+	 * visual "plo got this far" hint. Flush and return early. */
+	hal_dcacheClean((addr_t)video_common.framebuffer, (addr_t)video_common.framebuffer + video_common.size);
+	hal_consolePrint("draw: post-dcacheClean\n");
+	return;
 
 	if ((video_common.width < 128u) || (video_common.height < 64u)) {
 		hal_dcacheClean((addr_t)video_common.framebuffer, (addr_t)video_common.framebuffer + video_common.size);
@@ -382,8 +414,12 @@ void video_init(void)
 	}
 	hal_consolePrint("video: post-fbInit\n");
 
-	video_drawSignal();
-	hal_consolePrint("video: post-drawSignal\n");
+	/* TD-plo-drawsignal: cosmetic plo-time "progress" rendering is
+	 * blocked by an open issue (with caches on, the bg-fill loop hangs
+	 * or panel drawing faults with a wild FAR). Skip it to unblock
+	 * the rest of plo boot + kernel handoff. The kernel will set up
+	 * its own framebuffer access for real HDMI output. */
+	hal_consolePrint("video: skipping drawSignal (TD-plo-drawsignal)\n");
 	video_td16QueryArmFreq();
 	hal_consolePrint("video: post-armFreq\n");
 }

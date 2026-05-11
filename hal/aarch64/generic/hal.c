@@ -108,6 +108,12 @@ static void hal_memoryInit(void)
 	mmu_init();
 	hal_consolePrint("mem: post-init\n");
 
+	/* Map ARM-accessible DRAM (per arm_loader's total_mem window) as
+	 * Normal WB Cacheable. Wider remaps (up to 1 GB or peripheral
+	 * base) caused bg-fill hangs — speculation likely hits AXI-
+	 * unresponsive regions inside firmware-reserved DRAM. drawSignal
+	 * is skipped for now (TD-plo-drawsignal); when that's revisited
+	 * we'll figure out how to cache-map the framebuffer safely. */
 	for (sz = 0; sz < (size_t)SIZE_DDR; sz += SIZE_MMU_SECTION_REGION) {
 		addr = (addr_t)ADDR_DDR + sz;
 		mmu_mapAddr(addr, addr, MMU_FLAG_CACHED);
