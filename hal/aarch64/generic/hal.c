@@ -108,14 +108,23 @@ static void hal_memoryInit(void)
 	mmu_init();
 	hal_consolePrint("mem: post-init\n");
 
-	/* Map ARM-accessible DRAM (per arm_loader's total_mem window) as
-	 * Normal WB Cacheable. Wider remaps (up to 1 GB or peripheral
-	 * base) caused bg-fill hangs — speculation likely hits AXI-
-	 * unresponsive regions inside firmware-reserved DRAM. drawSignal
-	 * is skipped for now (TD-plo-drawsignal); when that's revisited
-	 * we'll figure out how to cache-map the framebuffer safely. */
+	/* Pi 4 4GB unlock: remap all ARM-accessible DRAM as Normal WB
+	 * Cacheable, EXCEPT the 76 MB GPU reserve (which VC4 owns and which
+	 * must stay Device so ARM-side cache writes don't alias VC4's
+	 * incoherent view of the framebuffer/GPU heap). Everything from
+	 * ADDR_DDR through SIZE_DDR is identity-remapped; the GPU hole stays
+	 * at the default DEVICE mapping installed by mmu_init.
+	 *   0x00000000 - 0x3b3fffff   CACHED  (chunk 1, 948 MB)
+	 *   0x3b400000 - 0x3fffffff   DEVICE  (GPU reserve, untouched)
+	 *   0x40000000 - 0xfbffffff   CACHED  (chunk 2, 3008 MB)
+	 *   0xfc000000 - 0xffffffff   DEVICE  (BCM2711 peripherals)
+	 */
 	for (sz = 0; sz < (size_t)SIZE_DDR; sz += SIZE_MMU_SECTION_REGION) {
 		addr = (addr_t)ADDR_DDR + sz;
+		if ((addr >= (addr_t)ADDR_GPU_RSV) &&
+				(addr < ((addr_t)ADDR_GPU_RSV + (addr_t)SIZE_GPU_RSV))) {
+			continue; /* leave Device — VC4 owns this range */
+		}
 		mmu_mapAddr(addr, addr, MMU_FLAG_CACHED);
 	}
 	hal_consolePrint("mem: post-map\n");
