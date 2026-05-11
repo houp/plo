@@ -145,33 +145,23 @@ static void hal_memoryInit(void)
 		asm volatile ("msr sctlr_el2, %0; isb" :: "r"(val) : "memory");
 		hal_consolePrint("mem: post-sctlr-write-M\n");
 
-		/* Now try to add I (instruction cache). */
-		val |= (1uL << 12);
-		hal_consolePrint("mem: pre-sctlr-write-MI\n");
-		asm volatile ("msr sctlr_el2, %0; isb" :: "r"(val) : "memory");
-		hal_consolePrint("mem: post-sctlr-write-MI\n");
-
-		/* Finally add C (data cache). */
+		/* Add C (data cache). Empirical: enabling SCTLR.I=1 (I-cache)
+		 * on rpi4b at EL2 caused the I-cache to refill from L2 lines
+		 * that held STALE data — at PC 0x201bd8 we observed the
+		 * I-cache feed 0xe4f6223c when RAM holds 0xf0000040 (the
+		 * `adrp x0, 20c000` instruction). Even `ic iallu` post-write
+		 * did not fix it because the refill source (L2) was the
+		 * stale party. Skipping I-cache: plo is small enough that
+		 * I-fetches running through L2/RAM directly is fine. With
+		 * SCTLR.I=0, instruction fetches treat memory as
+		 * Non-cacheable (ARM ARM B2.4.4) — they bypass the I-cache
+		 * and we avoid the alias entirely. TODO(TD-plo-icache):
+		 * understand why L2 holds bad data; possibly Pi 4
+		 * firmware/VC4 left lines that `dc isw` did not invalidate. */
 		val |= (1uL << 2);
-		hal_consolePrint("mem: pre-sctlr-write-MIC\n");
+		hal_consolePrint("mem: pre-sctlr-write-MC\n");
 		asm volatile ("msr sctlr_el2, %0; isb" :: "r"(val) : "memory");
-		hal_consolePrint("mem: post-sctlr-write-MIC\n");
-
-		/* Post-flip I-cache invalidate. Per ARM ARM D5.10.2 the
-		 * `dc isw` pass plo did at start_common is for power-down,
-		 * NOT for I/D coherency. After SCTLR.I=1 we may speculatively
-		 * fetch lines that disagree with what's in RAM. The cure
-		 * (per the Pi 4 community reports and OSv issue 1100 that
-		 * showed an identical EC=0x00 sync-abort pattern at an
-		 * otherwise-benign instruction) is to invalidate the I-cache
-		 * once after enabling it. If this is insufficient we will
-		 * add per-VA-line `dc cvau`+`ic ivau` over plo's .text. */
-		asm volatile (
-			"ic iallu\n"
-			"dsb ish\n"
-			"isb\n"
-			::: "memory");
-		hal_consolePrint("mem: post-icache-inval\n");
+		hal_consolePrint("mem: post-sctlr-write-MC\n");
 	}
 	hal_consolePrint("mem: post-enable\n");
 }

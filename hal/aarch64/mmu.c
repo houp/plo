@@ -88,13 +88,19 @@ static inline void mmu_setTranslationRegs(u64 ttbr0, u64 tcr, u64 mair)
 			break;
 		case 0x8U:
 			/* TCR_EL2 (non-VHE) field layout differs from TCR_EL1:
-			 *   - bit 23 (EPD1 in EL1) is RES0 here — must be cleared.
+			 *   - bit 23 is RES1 here (NOT EPD1 like in EL1; earlier
+			 *     version of this code cleared it thinking it was
+			 *     EPD1 — that was a write of 0 to a RES1 bit, which
+			 *     is CONSTRAINED-UNPREDICTABLE prior to ARMv8.2 and
+			 *     HW forces 1 on read-back. The mmu_init template
+			 *     happens to set bit 23 in the EL1 layout for an
+			 *     entirely different reason (EPD1=1 to disable TTBR1)
+			 *     so we just preserve it).
 			 *   - IPS/PS sits at bits 18:16 in TCR_EL2, not 34:32 like
 			 *     EL1.IPS. The caller computes TCR with EL1 conventions
-			 *     (mmu_init sets bit 23 + places PS at 34:32); we
-			 *     translate to the EL2 layout here.
+			 *     (mmu_init places PS at 34:32); we translate.
 			 */
-			tcr_el2_val = tcr & ~((1uL << 23) | ((u64)0x7 << 32));
+			tcr_el2_val = tcr & ~((u64)0x7 << 32);
 			tcr_el2_val |= ((tcr >> 32) & 0x7) << 16;
 			sysreg_write(ttbr0_el2, ttbr0);
 			sysreg_write(tcr_el2, tcr_el2_val);
