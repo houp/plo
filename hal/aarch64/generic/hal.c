@@ -129,54 +129,88 @@ static void hal_memoryInit(void)
 	}
 	hal_consolePrint("mem: post-map\n");
 
-	/* Try MMU only (M=1, C=I=0) first to test if just translation works
-	 * before enabling caches. */
 	{
 		u64 val;
 
-		/* Pre-flip cleanup. */
+		/* Per-VA cache hygiene over plo's ENTIRE image footprint
+		 * BEFORE flipping SCTLR.M|C|I. Multi-subagent root-cause
+		 * analysis (docs/status.md 2026-05-11 entry) established:
+		 *
+		 *   - ARM ARM B2.2.6 + DEN0024: `dc isw` (set/way) ops are
+		 *     "for cache power-down only, NOT for coherency". On
+		 *     BCM2711 there is also a VPU-side 1 MB system L2 on a
+		 *     separate fabric — set/way from the A72 cluster cannot
+		 *     reach it AT ALL. start4.elf primes that cache before
+		 *     handoff. Linux / U-Boot / FreeBSD never use set/way on
+		 *     the boot path; they use per-VA `dc civac`/`ivac`.
+		 *
+		 *   - Pi 4 armstub leaves the cluster L1+L2 in whatever state
+		 *     firmware left them — no clean before eret. Phoenix's
+		 *     armstub (commit 0f6be40) inherits this. So when plo
+		 *     enables D-cache, the first read of any BSS field can
+		 *     fill L1-D from a stale L2/L3 line and return garbage.
+		 *
+		 * We use `dc ivac` (invalidate-only, not civac) because plo's
+		 * stores went straight to RAM with caches off and ANY dirty
+		 * line in L2 for these PAs is firmware/VC4 garbage that we
+		 * want to drop without writing back (writeback would clobber
+		 * plo's RAM-resident data — this is the TD-05 reason the
+		 * start_common loop uses `dc isw` not `dc cisw`).
+		 *
+		 * Range is plo's entire footprint __text_start..__stack_top.
+		 * Cache-line size on A72 is 64 bytes (DminLine).
+		 */
+		{
+			extern char __text_start[], __stack_top[];
+			addr_t start = (addr_t)__text_start & ~63uL;
+			addr_t end = ((addr_t)__stack_top + 63uL) & ~63uL;
+			addr_t p;
+			for (p = start; p < end; p += 64) {
+				asm volatile ("dc ivac, %0" :: "r"(p) : "memory");
+			}
+		}
+		asm volatile ("dsb sy" ::: "memory");
+		hal_consolePrint("mem: post-dc-ivac\n");
+
+		/* Pre-flip I-cache + TLB invalidate (broadcast IS). */
 		asm volatile (
 			"ic   ialluis\n"
 			"dsb  ish\n"
 			"isb\n"
 			::: "memory");
-
-		hal_consolePrint("mem: pre-tlbi\n");
 		asm volatile ("tlbi alle2; dsb ish; isb" ::: "memory");
 		hal_consolePrint("mem: post-tlbi\n");
 
-		/* NOTE: hal_dcacheInvalAll() here uses `dc cisw` which can
-		 * write back ARBITRARY dirty lines left by boot ROM/armstub
-		 * — those writes may LAND on top of our freshly populated
-		 * page tables in DRAM. Skip it; kernel handles the canonical
-		 * inval-by-set-way later. */
-
 		asm volatile ("mrs %0, sctlr_el2" : "=r"(val));
-		hal_consolePrint("mem: post-read-sctlr\n");
 
-		val |= (1uL << 0);  /* M only first */
+		/* Linux `set_sctlr` macro shape: `msr; isb; ic iallu; dsb nsh;
+		 * isb`. The post-flip `ic iallu` discards instructions
+		 * speculatively fetched while the old SCTLR was live — exact
+		 * fix for the "garbage I-fetch after SCTLR.I=1" symptom we
+		 * documented. Staged enable so we observe each stage on UART.
+		 */
+#define SCTLR_EL2_WRITE_RITUAL(v) do { \
+		asm volatile ( \
+			"msr sctlr_el2, %0\n" \
+			"isb\n" \
+			"ic  iallu\n" \
+			"dsb nsh\n" \
+			"isb\n" \
+			:: "r"(v) : "memory"); \
+	} while (0)
 
+		val |= (1uL << 0);  /* M */
 		hal_consolePrint("mem: pre-sctlr-write-M\n");
-		asm volatile ("msr sctlr_el2, %0; isb" :: "r"(val) : "memory");
+		SCTLR_EL2_WRITE_RITUAL(val);
 		hal_consolePrint("mem: post-sctlr-write-M\n");
 
-		/* Add C (data cache). Empirical: enabling SCTLR.I=1 (I-cache)
-		 * on rpi4b at EL2 caused the I-cache to refill from L2 lines
-		 * that held STALE data — at PC 0x201bd8 we observed the
-		 * I-cache feed 0xe4f6223c when RAM holds 0xf0000040 (the
-		 * `adrp x0, 20c000` instruction). Even `ic iallu` post-write
-		 * did not fix it because the refill source (L2) was the
-		 * stale party. Skipping I-cache: plo is small enough that
-		 * I-fetches running through L2/RAM directly is fine. With
-		 * SCTLR.I=0, instruction fetches treat memory as
-		 * Non-cacheable (ARM ARM B2.4.4) — they bypass the I-cache
-		 * and we avoid the alias entirely. TODO(TD-plo-icache):
-		 * understand why L2 holds bad data; possibly Pi 4
-		 * firmware/VC4 left lines that `dc isw` did not invalidate. */
-		val |= (1uL << 2);
-		hal_consolePrint("mem: pre-sctlr-write-MC\n");
-		asm volatile ("msr sctlr_el2, %0; isb" :: "r"(val) : "memory");
-		hal_consolePrint("mem: post-sctlr-write-MC\n");
+		/* DIAG-EXPERIMENT: skip both I and C to test if MMU translation
+		 * alone (no caches) gets us past the post-handoff syspage
+		 * corruption. If M-only works through `exec kernel ram0`, the
+		 * corruption source is D-cache, not the MMU. If it still
+		 * fails, the corruption is in translation / mappings / page
+		 * tables themselves. */
+#undef SCTLR_EL2_WRITE_RITUAL
 	}
 	hal_consolePrint("mem: post-enable\n");
 }

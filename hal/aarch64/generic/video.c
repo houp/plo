@@ -230,11 +230,15 @@ static void video_drawSignal(void)
 	u32 boxSize, gap, outerPad, innerPad, boxX, boxY, px;
 	volatile u32 *row;
 
-	/* TD-plo-drawsignal: framebuffer rendering blocked by an open
-	 * issue (with caches on, bg-fill hangs; with caches off, it takes
-	 * minutes due to Device-nGnRE per-word writes). Skip entirely to
-	 * unblock the rest of plo boot. The kernel does its own HDMI/fb
-	 * setup later — this is just a plo-time progress indicator. */
+	/* TD-plo-drawsignal: VC4-allocated framebuffer at 0x3e87c000 sits
+	 * in the 76 MB GPU reserve which plo keeps Device-nGnRE (so ARM
+	 * cache writes don't alias VC4's incoherent view). Device-nGnRE
+	 * writes are ~1 transaction per 4 bytes — bg-fill of 1024x768x32bpp
+	 * (3 MB) takes minutes. Skip drawSignal until we either (a) get a
+	 * mailbox-call to ask VC4 to flush its system L2 then we can map
+	 * the framebuffer cached, or (b) accept the slow Device fill on
+	 * the cosmetic path. Either way, kernel-side HDMI is the long-term
+	 * answer; plo's bg-fill is just a "plo got this far" indicator. */
 	return;
 
 	hal_consolePrint("draw: enter\n");
@@ -414,12 +418,8 @@ void video_init(void)
 	}
 	hal_consolePrint("video: post-fbInit\n");
 
-	/* TD-plo-drawsignal: cosmetic plo-time "progress" rendering is
-	 * blocked by an open issue (with caches on, the bg-fill loop hangs
-	 * or panel drawing faults with a wild FAR). Skip it to unblock
-	 * the rest of plo boot + kernel handoff. The kernel will set up
-	 * its own framebuffer access for real HDMI output. */
-	hal_consolePrint("video: skipping drawSignal (TD-plo-drawsignal)\n");
+	video_drawSignal();
+	hal_consolePrint("video: post-drawSignal\n");
 	video_td16QueryArmFreq();
 	hal_consolePrint("video: post-armFreq\n");
 }
