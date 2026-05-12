@@ -171,34 +171,33 @@ static void hal_memoryInit(void)
 		asm volatile ("mrs %0, sctlr_el1" : "=r"(val));
 		hal_consolePrint("mem: post-read-sctlr\n");
 
-		/* Stage SCTLR_EL1: M (MMU) first, then M|C (D-cache), each with
-		 * its own ISB. Empirically required on Pi 4 / BCM2711 / A72 r0p3:
-		 * a single-shot M|C in one MSR deterministically hangs even
-		 * with all canonical-recipe items present (EL2->EL1 drop,
-		 * CPUACTLR[32] confirmed set before SMPEN, no pre-MMU dc/ic,
-		 * etc.). Staging works. ARM ARM doesn't require ISB between
-		 * the bit changes but on this part it appears the MMU needs
-		 * to stabilize before the D-cache turns on.
+		/* SCTLR_EL1.M only (caches off). The full canonical recipe
+		 * works through this stage — it's the M|C and M|C|I writes
+		 * that hit reproducible cache hazards on Pi 4 / BCM2711 /
+		 * A72 r0p3.
 		 *
-		 * I-cache enable (M|C|I) currently triggers a deterministic
-		 * "first I-fetch returns garbage" abort with EC=0x00 even
-		 * with staging. The 859971 workaround is confirmed effective.
-		 * Root cause not yet identified. Tracked as TD-plo-icache. */
-		val |= (1uL << 0);  /* M  - MMU only (caches off) */
+		 * TD-plo-dcache (open): with `dc civac` over plo image +
+		 * 4 MB initramfs, the wild-pointer crash inside
+		 * syspage_entryAdd that previously killed M|C attempts goes
+		 * away — plo reaches the banner and first pre-init commands
+		 * cleanly. But output corruption (mid-string format-string
+		 * garble) still appears during user.plo command execution.
+		 * Wider civac (1 GB) made it worse; single-shot M|C still
+		 * hangs even with civac. Root cause is partial — likely
+		 * additional PA ranges plo touches that we haven't yet
+		 * located, or an A72-specific speculation window the civac
+		 * doesn't close. See docs/research/2026-05-12-dcache-civac-
+		 * partial-fix.md for the full empirical log.
+		 *
+		 * TD-plo-icache (open): SCTLR.I=1 still triggers first-fetch
+		 * garbage with EC=0x00 despite 859971 confirmed effective. */
+		val |= (1uL << 0);
 		hal_consolePrint("mem: pre-sctlr-M\n");
 		asm volatile (
 			"msr sctlr_el1, %0\n"
 			"isb\n"
 			:: "r"(val) : "memory");
 		hal_consolePrint("mem: post-sctlr-M\n");
-
-		/* D-cache enable (SCTLR.C=1) is currently parked at the plo
-		 * level. With C=1, exec-kernel path inside plo hits the same
-		 * wild-pointer-deref class of fault we've been chasing for
-		 * days (EC=0x22 PC-alignment with FAR=wild). Yesterday's
-		 * M-only-at-EL2 state booted through to the kernel relocator
-		 * (X1..X5+L); enabling C breaks that. The EL1 drop today
-		 * doesn't change this. Open: TD-plo-dcache. */
 	}
 	hal_consolePrint("mem: post-enable\n");
 }
