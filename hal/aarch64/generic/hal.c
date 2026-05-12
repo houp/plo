@@ -204,6 +204,46 @@ static void hal_memoryInit(void)
 }
 
 
+/* SMP smoke test: wake cores 1-3 from their armstub spin-table parking
+ * and point them at secondary_smoke_entry (in _init.S). They will
+ * print `cN: alive\n` to UART and park in WFE — no kernel state is
+ * touched, no shared resource is contended (no stack, no MMU). This
+ * proves the wake-up mechanism works end-to-end without any risk to
+ * core 0's boot path.
+ *
+ * Pi 4 armstub spin-table layout (see phoenix-armstub8-rpi4.S near
+ * `secondary_spin`):
+ *   PA 0xD8 = spin_cpu0  (unused — core 0 doesn't spin)
+ *   PA 0xE0 = spin_cpu1
+ *   PA 0xE8 = spin_cpu2
+ *   PA 0xF0 = spin_cpu3
+ * Cores wait at `wfe` then `ldr x4, [spin_cpu0 + coreID*8]`. A non-
+ * zero value released by `sev` from any core wakes them and they
+ * `br x4` to that address. We point them at secondary_smoke_entry.
+ */
+extern void secondary_smoke_entry(void);
+
+static void hal_smpBringupSecondaries(void)
+{
+	addr_t entry = (addr_t)secondary_smoke_entry;
+
+	/* Write spin_cpu1 / spin_cpu2 / spin_cpu3 at PAs 0xE0 / 0xE8 / 0xF0
+	 * via inline asm — `str` to a near-zero address tripped GCC's
+	 * -Warray-bounds=2 when expressed as a C pointer dereference. */
+	asm volatile (
+		"mov x10, #0xe0\n"
+		"str %0, [x10]\n"        /* spin_cpu1 */
+		"mov x10, #0xe8\n"
+		"str %0, [x10]\n"        /* spin_cpu2 */
+		"mov x10, #0xf0\n"
+		"str %0, [x10]\n"        /* spin_cpu3 */
+		"dsb sy\n"
+		"sev\n"
+		:: "r"(entry) : "x10", "memory");
+	hal_consolePrint("hal: smp smoke woke cores 1-3\n");
+}
+
+
 void hal_init(void)
 {
 	interrupts_init();
@@ -217,6 +257,7 @@ void hal_init(void)
 	hal_consolePrint("hal: video_init done\n");
 	hal_printCurrentEl();
 	video_markHalReady();
+	hal_smpBringupSecondaries();
 	hal_consolePrint("hal: init complete\n");
 
 	hal_common.entry = (addr_t)-1;

@@ -283,14 +283,106 @@ other_core_trap:
 	dsb ish
 	wfe
 	/*
-	 * Keep secondary CPUs parked until generic AArch64 grows an SMP-capable
-	 * kernel target. The current generic kernel configuration is single-core.
+	 * NOTE: cores 1-3 do not actually reach this point in the current
+	 * configuration — the rpi4 armstub parks them in its own
+	 * `secondary_spin` loop at the standard spin-table addresses
+	 * (PA 0xE0 / 0xE8 / 0xF0). Plo's hal_smpBringupSecondaries (called
+	 * from C, see hal.c) writes the secondary entry address into those
+	 * armstub slots and issues SEV, which jumps cores 1-3 into
+	 * secondary_smoke_entry below (NOT here). This local trap is kept
+	 * as defense-in-depth in case the armstub layout ever changes.
 	 */
 	b other_core_trap
 
 start_core_0:
 	adr x1, _startc
 	br x1
+
+
+/* SMP smoke trampoline. Reached by cores 1-3 from the armstub
+ * spin-table after plo writes the entry address there and does SEV.
+ * Cores arrive at EL2 with caches off (armstub state), MMU off, and
+ * no usable stack. We just print 'c<digit>: alive\n' via direct PL011
+ * MMIO (MMU off -> VA = PA, no translation) and park in WFE.
+ *
+ * UART writes from secondary cores can race with core 0's writes —
+ * we accept the interleaving for this smoke test. Each character is
+ * a single 32-bit store to PL011_DR which is atomic at word level.
+ *
+ * No stack use: only x3..x7 scratch registers, no `bl`.
+ */
+.globl secondary_smoke_entry
+.type secondary_smoke_entry, %function
+secondary_smoke_entry:
+	mrs x6, mpidr_el1
+	and x6, x6, #0x3        /* core ID 0..3 */
+
+	/* spin until UART TX FIFO has room, then write a char (in w4) */
+	/* 'c' */
+	mov w4, #'c'
+1:
+	ldr x3, =(PLO_UART0_BASE_ADDRESS + UARTFR_OFFSET)
+	ldr w5, [x3]
+	tst w5, #UARTFR_TXFF
+	b.ne 1b
+	ldr x3, =PLO_UART0_BASE_ADDRESS
+	str w4, [x3]
+
+	/* digit = '0' + core ID */
+	add w4, w6, #'0'
+2:
+	ldr x3, =(PLO_UART0_BASE_ADDRESS + UARTFR_OFFSET)
+	ldr w5, [x3]
+	tst w5, #UARTFR_TXFF
+	b.ne 2b
+	ldr x3, =PLO_UART0_BASE_ADDRESS
+	str w4, [x3]
+
+	/* ':' */
+	mov w4, #':'
+3:
+	ldr x3, =(PLO_UART0_BASE_ADDRESS + UARTFR_OFFSET)
+	ldr w5, [x3]
+	tst w5, #UARTFR_TXFF
+	b.ne 3b
+	ldr x3, =PLO_UART0_BASE_ADDRESS
+	str w4, [x3]
+
+	/* ' ' */
+	mov w4, #' '
+4:
+	ldr x3, =(PLO_UART0_BASE_ADDRESS + UARTFR_OFFSET)
+	ldr w5, [x3]
+	tst w5, #UARTFR_TXFF
+	b.ne 4b
+	ldr x3, =PLO_UART0_BASE_ADDRESS
+	str w4, [x3]
+
+	/* 'a' */
+	mov w4, #'a'
+5:
+	ldr x3, =(PLO_UART0_BASE_ADDRESS + UARTFR_OFFSET)
+	ldr w5, [x3]
+	tst w5, #UARTFR_TXFF
+	b.ne 5b
+	ldr x3, =PLO_UART0_BASE_ADDRESS
+	str w4, [x3]
+
+	/* '\n' */
+	mov w4, #10
+6:
+	ldr x3, =(PLO_UART0_BASE_ADDRESS + UARTFR_OFFSET)
+	ldr w5, [x3]
+	tst w5, #UARTFR_TXFF
+	b.ne 6b
+	ldr x3, =PLO_UART0_BASE_ADDRESS
+	str w4, [x3]
+
+secondary_park:
+	dsb sy
+	wfe
+	b secondary_park
+.size secondary_smoke_entry, .-secondary_smoke_entry
 
 
 start_el_unknown:
