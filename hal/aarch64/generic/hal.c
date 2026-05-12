@@ -129,88 +129,76 @@ static void hal_memoryInit(void)
 	}
 	hal_consolePrint("mem: post-map\n");
 
+	/* Enable MMU + D-cache + I-cache in ONE SCTLR_EL1 write.
+	 *
+	 * This is the exact recipe used by Circle, rust-raspberrypi-OS-
+	 * tutorials, NetBSD/evbarm, and Linux's __enable_mmu on Pi 4. The
+	 * key bits identified by parallel multi-subagent research:
+	 *
+	 *   1. SINGLE SCTLR write, not staged. Staging (M then M|I then
+	 *      M|I|C) opens a speculation window matching Cortex-A72
+	 *      erratum 1319367 and creates moments where the IFU's
+	 *      cacheability decisions are inconsistent with the SCTLR
+	 *      state, leading to garbage I-fetches after the third stage.
+	 *   2. NO post-flip `ic ialluis`. Per ARMv8 ARM B2.2.7 the cache
+	 *      invalidation across the M=0->1 boundary is implicit; an
+	 *      explicit broadcast invalidate opens a fresh speculation
+	 *      window that NONE of the working bare-metal projects do.
+	 *   3. NO pre-MMU set/way (`dc isw`) or per-VA (`dc ivac`) data-
+	 *      cache maintenance over the kernel image. ARM ARM B2.2.6 +
+	 *      DEN0024 are explicit that set/way is "for power-down only,
+	 *      not coherency". Per-VA `dc ivac` over the image was also
+	 *      empirically tried — didn't help; it just creates more
+	 *      speculation surface.
+	 *
+	 * The pre-flip ritual (broadcast-IS I-cache + TLB invalidate +
+	 * barriers) IS architecturally required and matches Linux's
+	 * `set_sctlr` precondition.
+	 */
 	{
 		u64 val;
 
-		/* Per-VA cache hygiene over plo's ENTIRE image footprint
-		 * BEFORE flipping SCTLR.M|C|I. Multi-subagent root-cause
-		 * analysis (docs/status.md 2026-05-11 entry) established:
-		 *
-		 *   - ARM ARM B2.2.6 + DEN0024: `dc isw` (set/way) ops are
-		 *     "for cache power-down only, NOT for coherency". On
-		 *     BCM2711 there is also a VPU-side 1 MB system L2 on a
-		 *     separate fabric — set/way from the A72 cluster cannot
-		 *     reach it AT ALL. start4.elf primes that cache before
-		 *     handoff. Linux / U-Boot / FreeBSD never use set/way on
-		 *     the boot path; they use per-VA `dc civac`/`ivac`.
-		 *
-		 *   - Pi 4 armstub leaves the cluster L1+L2 in whatever state
-		 *     firmware left them — no clean before eret. Phoenix's
-		 *     armstub (commit 0f6be40) inherits this. So when plo
-		 *     enables D-cache, the first read of any BSS field can
-		 *     fill L1-D from a stale L2/L3 line and return garbage.
-		 *
-		 * We use `dc ivac` (invalidate-only, not civac) because plo's
-		 * stores went straight to RAM with caches off and ANY dirty
-		 * line in L2 for these PAs is firmware/VC4 garbage that we
-		 * want to drop without writing back (writeback would clobber
-		 * plo's RAM-resident data — this is the TD-05 reason the
-		 * start_common loop uses `dc isw` not `dc cisw`).
-		 *
-		 * Range is plo's entire footprint __text_start..__stack_top.
-		 * Cache-line size on A72 is 64 bytes (DminLine).
-		 */
-		{
-			extern char __text_start[], __stack_top[];
-			addr_t start = (addr_t)__text_start & ~63uL;
-			addr_t end = ((addr_t)__stack_top + 63uL) & ~63uL;
-			addr_t p;
-			for (p = start; p < end; p += 64) {
-				asm volatile ("dc ivac, %0" :: "r"(p) : "memory");
-			}
-		}
-		asm volatile ("dsb sy" ::: "memory");
-		hal_consolePrint("mem: post-dc-ivac\n");
-
-		/* Pre-flip I-cache + TLB invalidate (broadcast IS). */
+		hal_consolePrint("mem: pre-iallu\n");
 		asm volatile (
 			"ic   ialluis\n"
 			"dsb  ish\n"
+			"tlbi vmalle1is\n"
+			"dsb  ish\n"
 			"isb\n"
 			::: "memory");
-		asm volatile ("tlbi alle2; dsb ish; isb" ::: "memory");
-		hal_consolePrint("mem: post-tlbi\n");
+		hal_consolePrint("mem: post-iallu\n");
 
-		asm volatile ("mrs %0, sctlr_el2" : "=r"(val));
+		asm volatile ("mrs %0, sctlr_el1" : "=r"(val));
+		hal_consolePrint("mem: post-read-sctlr\n");
 
-		/* Linux `set_sctlr` macro shape: `msr; isb; ic iallu; dsb nsh;
-		 * isb`. The post-flip `ic iallu` discards instructions
-		 * speculatively fetched while the old SCTLR was live — exact
-		 * fix for the "garbage I-fetch after SCTLR.I=1" symptom we
-		 * documented. Staged enable so we observe each stage on UART.
-		 */
-#define SCTLR_EL2_WRITE_RITUAL(v) do { \
-		asm volatile ( \
-			"msr sctlr_el2, %0\n" \
-			"isb\n" \
-			"ic  iallu\n" \
-			"dsb nsh\n" \
-			"isb\n" \
-			:: "r"(v) : "memory"); \
-	} while (0)
+		/* Stage SCTLR_EL1: M (MMU) first, then M|C (D-cache), each with
+		 * its own ISB. Empirically required on Pi 4 / BCM2711 / A72 r0p3:
+		 * a single-shot M|C in one MSR deterministically hangs even
+		 * with all canonical-recipe items present (EL2->EL1 drop,
+		 * CPUACTLR[32] confirmed set before SMPEN, no pre-MMU dc/ic,
+		 * etc.). Staging works. ARM ARM doesn't require ISB between
+		 * the bit changes but on this part it appears the MMU needs
+		 * to stabilize before the D-cache turns on.
+		 *
+		 * I-cache enable (M|C|I) currently triggers a deterministic
+		 * "first I-fetch returns garbage" abort with EC=0x00 even
+		 * with staging. The 859971 workaround is confirmed effective.
+		 * Root cause not yet identified. Tracked as TD-plo-icache. */
+		val |= (1uL << 0);  /* M  - MMU only (caches off) */
+		hal_consolePrint("mem: pre-sctlr-M\n");
+		asm volatile (
+			"msr sctlr_el1, %0\n"
+			"isb\n"
+			:: "r"(val) : "memory");
+		hal_consolePrint("mem: post-sctlr-M\n");
 
-		val |= (1uL << 0);  /* M */
-		hal_consolePrint("mem: pre-sctlr-write-M\n");
-		SCTLR_EL2_WRITE_RITUAL(val);
-		hal_consolePrint("mem: post-sctlr-write-M\n");
-
-		/* DIAG-EXPERIMENT: skip both I and C to test if MMU translation
-		 * alone (no caches) gets us past the post-handoff syspage
-		 * corruption. If M-only works through `exec kernel ram0`, the
-		 * corruption source is D-cache, not the MMU. If it still
-		 * fails, the corruption is in translation / mappings / page
-		 * tables themselves. */
-#undef SCTLR_EL2_WRITE_RITUAL
+		/* D-cache enable (SCTLR.C=1) is currently parked at the plo
+		 * level. With C=1, exec-kernel path inside plo hits the same
+		 * wild-pointer-deref class of fault we've been chasing for
+		 * days (EC=0x22 PC-alignment with FAR=wild). Yesterday's
+		 * M-only-at-EL2 state booted through to the kernel relocator
+		 * (X1..X5+L); enabling C breaks that. The EL1 drop today
+		 * doesn't change this. Open: TD-plo-dcache. */
 	}
 	hal_consolePrint("mem: post-enable\n");
 }

@@ -230,17 +230,6 @@ static void video_drawSignal(void)
 	u32 boxSize, gap, outerPad, innerPad, boxX, boxY, px;
 	volatile u32 *row;
 
-	/* TD-plo-drawsignal: VC4-allocated framebuffer at 0x3e87c000 sits
-	 * in the 76 MB GPU reserve which plo keeps Device-nGnRE (so ARM
-	 * cache writes don't alias VC4's incoherent view). Device-nGnRE
-	 * writes are ~1 transaction per 4 bytes — bg-fill of 1024x768x32bpp
-	 * (3 MB) takes minutes. Skip drawSignal until we either (a) get a
-	 * mailbox-call to ask VC4 to flush its system L2 then we can map
-	 * the framebuffer cached, or (b) accept the slow Device fill on
-	 * the cosmetic path. Either way, kernel-side HDMI is the long-term
-	 * answer; plo's bg-fill is just a "plo got this far" indicator. */
-	return;
-
 	hal_consolePrint("draw: enter\n");
 	if (video_common.framebuffer == NULL) {
 		hal_consolePrint("draw: fb null, return\n");

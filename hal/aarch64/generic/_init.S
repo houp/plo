@@ -137,66 +137,100 @@ start_el3:
 	b start_common
 
 
+/* start_el2: minimal EL2 setup, then eret to EL1.
+ *
+ * Canonical AArch64 boot recipe followed by Circle, rust-raspberrypi-
+ * OS-tutorials, NetBSD evbarm rpi4, U-Boot, Linux: ALL MMU + cache
+ * enable work runs at EL1, not EL2. The EL2 stage is purely a
+ * pass-through: set HCR_EL2.RW so EL1 is AArch64, set the EL1 timer
+ * counter accessibility bits, ERET. Phoenix's earlier "run plo MMU
+ * at EL2" approach exposed cache-aliasing pathologies that didn't
+ * happen at EL1 in any of the three reference projects.
+ *
+ * What we configure at EL2 BEFORE the drop:
+ *   - DAIF masked (defensive — armstub doesn't guarantee a clean state).
+ *   - CNTVOFF_EL2 = 0, CNTHCTL_EL2 = 3 so EL1 can access the timer.
+ *   - CPTR_EL2 = 0x33ff (RES1 + FP/SIMD trap disable), MDCR_EL2 = 0,
+ *     HSTR_EL2 = 0, VTTBR_EL2 = 0 — all the trap-class registers
+ *     zeroed (UNKNOWN at reset on A72, must be set explicitly).
+ *   - VPIDR_EL2/VMPIDR_EL2 mirror MIDR/MPIDR so EL1 reads sane IDs.
+ *   - HCR_EL2.RW = 1 (EL1 is AArch64), nothing else — we don't
+ *     enable AMO/IMO/FMO because we're not staying at EL2 to handle
+ *     them.
+ *   - SCTLR_EL2 baseline keeps RES1 bits, M/C/I all OFF.
+ *   - SCTLR_EL1 zero except RES1 (will be configured by start_el1).
+ *   - VBAR_EL2 -> _vector_table as a safety net if a sync exception
+ *     fires during the brief EL2 window before ERET.
+ *   - SP_EL1 -> _stack so EL1 has a stack the instant it starts.
+ *
+ * Then SPSR_EL2 = EL1h with DAIF masked, ELR_EL2 -> start_el1, ERET.
+ */
 start_el2:
-	/* Defense-in-depth: mask all asynchronous classes (DAIF) before
-	 * any state writes. Linux + U-Boot rely on a clean precondition
-	 * from the prior stage; the rpi4 armstub does not guarantee one. */
 	msr daifSet, #0xf
 
+	/* Timer accessibility for EL1 (CNTVOFF_EL2 must be 0, CNTHCTL_EL2
+	 * bits[1:0] = EL1PCEN | EL1PCTEN). */
 	msr cntvoff_el2, xzr
 	mov x0, #0x3
 	msr cnthctl_el2, x0
-	/* CPTR_EL2 = 0x33ff matches U-Boot + Linux nVHE: FP/SIMD trap
-	 * disabled, RES1 bits set. On A72 the hardware forces RES1 bits
-	 * on read-back so semantically equivalent to writing 0, but
-	 * writing 0 to RES1 is CONSTRAINED-UNPREDICTABLE prior to ARMv8.2. */
+
+	/* CPTR_EL2 = 0x33ff: RES1 bits + FP/SIMD trap disable. Per Linux
+	 * __init_el2_state and U-Boot armv8. */
 	mov x0, #0x33ff
 	msr cptr_el2, x0
-	/* SCTLR_EL2 baseline 0x30c50838: SCTLR_EL2 RES1 bits for A72 r0p3
-	 * (29, 28, 23, 22, 18, 16, 11, 5, 4). Previous baseline 0x30c00838
-	 * missed bit 18 in the write; HW forces it on read-back so prior
-	 * boots survived, but mainline writes the architecturally correct
-	 * value. */
+
+	/* SCTLR_EL2 RES1 baseline (no M/C/I). 0x30c50838 sets bits 29, 28,
+	 * 23, 22, 18, 16, 11, 5, 4, 3 — all RES1 on A72 r0p3 non-VHE. */
 	ldr x0, =0x30c50838
 	msr sctlr_el2, x0
-	msr sctlr_el1, xzr
-	msr vttbr_el2, xzr
 
-	/* MDCR_EL2 / HSTR_EL2 — UNKNOWN at reset on A72. Linux's
-	 * __init_el2_debug always clears MDCR_EL2 (no debug traps to
-	 * EL2 from EL1); __init_el2_hstr always clears HSTR_EL2 (no
-	 * CP15 traps to EL2). Leaving them UNKNOWN can surface as
-	 * speculative-debug-uop traps that the CPU may report with
-	 * EC=0x00 (matches our observed fault class). */
+	/* SCTLR_EL1 RES1 baseline (no M/C/I) — start_el1 will pick this
+	 * up via mmu_enable() which RMWs the SCTLR. */
+	ldr x0, =0x30c50838
+	msr sctlr_el1, x0
+
+	/* Zero MDCR_EL2 / HSTR_EL2 / VTTBR_EL2 — UNKNOWN at reset on A72. */
 	msr mdcr_el2, xzr
 	msr hstr_el2, xzr
+	msr vttbr_el2, xzr
 
-	/* Mirror MIDR_EL1 -> VPIDR_EL2, MPIDR_EL1 -> VMPIDR_EL2 so
-	 * any EL1 code (now or after a future drop) reads sane IDs. */
+	/* Mirror MIDR_EL1 -> VPIDR_EL2, MPIDR_EL1 -> VMPIDR_EL2. */
 	mrs x0, midr_el1
 	msr vpidr_el2, x0
 	mrs x0, mpidr_el1
 	msr vmpidr_el2, x0
 
+	/* ACTLR_EL2 = 0x73: grant EL1 access to CPUACTLR_EL1 / CPUECTLR_EL1
+	 * / L2CTLR_EL1 (A72 IMP-DEF). */
 	mov x0, #0b1110011
 	msr actlr_el2, x0
-	/* HCR_EL2 = RW(31) | ATA(29) | AMO(5) | IMO(4) | FMO(3).
-	 * AMO/IMO/FMO route physical SError/IRQ/FIQ to EL2 instead of
-	 * EL1. plo runs at EL2 with no EL1 active; without these bits an
-	 * SError targets EL1 and lands in CONSTRAINED-UNPREDICTABLE
-	 * territory (top hypothesis for the EC=0x00 fault we observe).
-	 * Constant 0xa0000038 doesn't fit a single MOV imm; use ldr =. */
-	ldr x0, =0xa0000038
+
+	/* HCR_EL2.RW = 1 (EL1 is AArch64). No AMO/IMO/FMO — we don't run
+	 * any code at EL2 after this, so SError/IRQ/FIQ routing is N/A. */
+	mov x0, #(1 << 31)
 	msr hcr_el2, x0
 
+	/* VBAR_EL2 safety net for any sync exception in the brief EL2 window. */
 	adr x0, _vector_table
 	msr vbar_el2, x0
-	isb
 
+	/* Hand EL1 a usable stack and vector table. */
+	adr x0, _stack
+	msr sp_el1, x0
+
+	isb
 	ic iallu
 	tlbi alle2
+	dsb sy
+	isb
 
-	b start_common
+	/* Prepare ERET to start_el1. SPSR_EL2 = EL1h | D|A|I|F masked = 0x3c5
+	 * (bits[3:0] = 0b0101 = EL1h, bits[9:6] = 0b1111 = DAIF). */
+	mov x0, #0x3c5
+	msr spsr_el2, x0
+	adr x0, start_el1
+	msr elr_el2, x0
+	eret
 
 
 start_el1:
@@ -215,52 +249,23 @@ start_common:
 	dsb sy
 	isb
 
-	/* TD-05: drop all data-cache lines across every level up to LoC via
-	 * set/way invalidate-only (dc isw), before plo writes anything. Pi 4
-	 * firmware runs with D-cache enabled and leaves dirty lines for
-	 * arbitrary DDR PAs. plo runs cache-off (SCTLR.{M,C,I}=0), so plo's
-	 * stores go directly to DDR. But firmware's dirty lines (in L1 AND
-	 * L2, since A72's L2 is unified and not fully inclusive of L1) stay
-	 * resident and get evicted later (speculatively, once the kernel
-	 * enables D-cache) on top of plo's DDR data, producing bit-level
-	 * nondeterminism in the syspage bytes the kernel then copies.
-	 * Invalidate-only (not civac) is required: civac would write
-	 * firmware's stale lines back to DDR, clobbering plo's fresh uncached
-	 * writes. Set/way (not VA) because A72 promotes `dc ivac` to civac on
-	 * writable addresses. Safe to drop all lines here: plo reinitializes
-	 * BSS and heap itself, so no reachable data needs to survive. */
-	mrs x16, clidr_el1
-	and x17, x16, #0x7000000  /* LoC << 24 */
-	lsr x17, x17, #23         /* LoC * 2 (csselr level step) */
-	cbz x17, 110f             /* no cache at all? skip */
-	mov x18, #0               /* current csselr value (level<<1 | InD) */
-102:
-	msr csselr_el1, x18
-	isb
-	mrs x0, ccsidr_el1
-	and x2, x0, #0x7          /* log2(line size in words) - 2 */
-	add x2, x2, #4            /* log2(line size in bytes) */
-	ubfx x3, x0, #3, #10      /* associativity - 1 */
-	ubfx x4, x0, #13, #15     /* number of sets - 1 */
-	clz w5, w3                /* bit position for way in set/way operand */
-100:
-	mov x6, x4
-101:
-	lsl x7, x3, x5
-	lsl x8, x6, x2
-	orr x7, x7, x8
-	orr x7, x7, x18           /* level bits [3:1] */
-	dc isw, x7
-	subs x6, x6, #1
-	b.ge 101b
-	subs x3, x3, #1
-	b.ge 100b
-	add x18, x18, #2          /* next level */
-	cmp x18, x17
-	b.lt 102b
-110:
-	dsb sy
-	isb
+	/* Per ARM ARM B2.2.6 + DEN0024 + the convergent evidence of Circle,
+	 * rust-raspberrypi-OS-tutorials, NetBSD, U-Boot, and Linux on Pi 4:
+	 * set/way cache maintenance (dc isw) on the boot path is "for cache
+	 * power-down ONLY, not for coherency". None of those projects do
+	 * it; they trust the upstream stage (armstub/firmware) to leave
+	 * caches off and the cluster L1 contents UNKNOWN-but-harmless,
+	 * because plo's MMU-enable code runs with the cache off and the
+	 * very first cacheable access happens only after SCTLR.M|C|I=1.
+	 *
+	 * (Historical context: the previous TD-05 set/way loop was
+	 * motivated by a misdiagnosed VPU-side-L2 aliasing hypothesis.
+	 * Multi-subagent research 2026-05-12 falsified that — there is no
+	 * VPU L2 on the ARM->DRAM path on BCM2711; the system L2 is
+	 * GPU-only. So this loop was removing dirty lines that the boot
+	 * path didn't actually depend on, while making the boot
+	 * non-deterministic by running an architecturally-deprecated
+	 * primitive at an early phase.) */
 
 	ldr x2, =hal_firmwareDtb
 	str x19, [x2]
@@ -414,35 +419,35 @@ _slot_e_dump:
 	uart_putc 'S'
 	uart_putc 'R'
 	uart_putc '='
-	mrs x6, esr_el2
+	mrs x6, esr_el1
 	bl uart_put_hex64
 	uart_putc '\n'
 	uart_putc 'E'
 	uart_putc 'L'
 	uart_putc 'R'
 	uart_putc '='
-	mrs x6, elr_el2
+	mrs x6, elr_el1
 	bl uart_put_hex64
 	uart_putc '\n'
 	uart_putc 'F'
 	uart_putc 'A'
 	uart_putc 'R'
 	uart_putc '='
-	mrs x6, far_el2
+	mrs x6, far_el1
 	bl uart_put_hex64
 	uart_putc '\n'
 	uart_putc 'S'
 	uart_putc 'P'
 	uart_putc 'R'
 	uart_putc '='
-	mrs x6, spsr_el2
+	mrs x6, spsr_el1
 	bl uart_put_hex64
 	uart_putc '\n'
 	uart_putc 'S'
 	uart_putc 'C'
 	uart_putc 'T'
 	uart_putc '='
-	mrs x6, sctlr_el2
+	mrs x6, sctlr_el1
 	bl uart_put_hex64
 	uart_putc '\n'
 
@@ -451,21 +456,21 @@ _slot_e_dump:
 	uart_putc 'T'
 	uart_putc 'B'
 	uart_putc '='
-	mrs x6, ttbr0_el2
+	mrs x6, ttbr0_el1
 	bl uart_put_hex64
 	uart_putc '\n'
 	uart_putc 'T'
 	uart_putc 'C'
 	uart_putc 'R'
 	uart_putc '='
-	mrs x6, tcr_el2
+	mrs x6, tcr_el1
 	bl uart_put_hex64
 	uart_putc '\n'
 	uart_putc 'M'
 	uart_putc 'A'
 	uart_putc 'R'
 	uart_putc '='
-	mrs x6, mair_el2
+	mrs x6, mair_el1
 	bl uart_put_hex64
 	uart_putc '\n'
 
@@ -477,7 +482,7 @@ _slot_e_dump:
 	uart_putc 'N'
 	uart_putc 'S'
 	uart_putc '='
-	mrs x8, elr_el2
+	mrs x8, elr_el1
 	ldr w6, [x8]                /* writing w6 zero-extends to x6 */
 	bl uart_put_hex64
 	uart_putc '\n'
