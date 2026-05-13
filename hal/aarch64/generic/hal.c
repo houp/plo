@@ -171,26 +171,33 @@ static void hal_memoryInit(void)
 		asm volatile ("mrs %0, sctlr_el1" : "=r"(val));
 		hal_consolePrint("mem: post-read-sctlr\n");
 
-		/* SCTLR_EL1.M only (caches off). The full canonical recipe
-		 * works through this stage — it's the M|C and M|C|I writes
-		 * that hit reproducible cache hazards on Pi 4 / BCM2711 /
-		 * A72 r0p3.
+		/* SCTLR_EL1.M only (caches off). M-only is the boot-correct
+		 * baseline on Pi 4. D-cache enable in plo is a multi-stage
+		 * problem (TD-plo-dcache, TD-plo-icache) tracked in
+		 * docs/research/2026-05-12-dcache-civac-partial-fix.md and
+		 * docs/research/2026-05-13-plo-cache-empirical-pivot.md.
 		 *
-		 * TD-plo-dcache (open): with `dc civac` over plo image +
-		 * 4 MB initramfs, the wild-pointer crash inside
-		 * syspage_entryAdd that previously killed M|C attempts goes
-		 * away — plo reaches the banner and first pre-init commands
-		 * cleanly. But output corruption (mid-string format-string
-		 * garble) still appears during user.plo command execution.
-		 * Wider civac (1 GB) made it worse; single-shot M|C still
-		 * hangs even with civac. Root cause is partial — likely
-		 * additional PA ranges plo touches that we haven't yet
-		 * located, or an A72-specific speculation window the civac
-		 * doesn't close. See docs/research/2026-05-12-dcache-civac-
-		 * partial-fix.md for the full empirical log.
+		 * Empirically confirmed this session:
+		 *   - Single-shot M|C hangs at the MSR (A72 quirk,
+		 *     independent of erratum 1319367 which IS now applied
+		 *     in the armstub).
+		 *   - Staged M-then-MC (with ISB between) clears that hang.
+		 *   - With staged M|C, plo reaches the banner cleanly
+		 *     thanks to 1319367; but the user.plo command parse
+		 *     hits intermittent mid-string printf garble and the
+		 *     kernel ELF read fails with EINVAL.
+		 *   - `dc civac` of firmware-dirty L2 lines is
+		 *     COUNTER-PRODUCTIVE: civac cleans (writes back) the
+		 *     stale lines on top of correct RAM contents — A72 L2
+		 *     is UNIFIED (I+D), so cleaning poisons plo's .text.
+		 *     `dc ivac` (invalidate-only) is the correct
+		 *     primitive but didn't fully clear the residual
+		 *     garble — root cause still partially open.
 		 *
-		 * TD-plo-icache (open): SCTLR.I=1 still triggers first-fetch
-		 * garbage with EC=0x00 despite 859971 confirmed effective. */
+		 * The plo cache-on path is parked here. The kernel boots
+		 * in its own address space (high VAs that firmware never
+		 * touched) and is the better target for cache enable — that
+		 * work continues separately. */
 		val |= (1uL << 0);
 		hal_consolePrint("mem: pre-sctlr-M\n");
 		asm volatile (
