@@ -550,12 +550,28 @@ int hal_cpuJump(void)
 	hal_consolePrint("hal: jump exit el1\n");
 
 	/* Tear down the cacheable execution environment hal_memoryInit() set
-	 * up, mirroring the canonical zynqmp pattern at
-	 * plo/hal/aarch64/zynqmp/hal.c:255-266. Order: drop D-cache enable
-	 * first, civac entire DDR (so no further fills can race the flush),
-	 * drop I-cache, invalidate I-cache, then mmu_disable. */
+	 * up. Order: drop D-cache enable first, INVALIDATE (do NOT clean)
+	 * the entire DDR range to discard any cache lines left over from
+	 * the VC4/firmware boot phase, drop I-cache, invalidate I-cache,
+	 * then mmu_disable.
+	 *
+	 * Rationale: plo runs M-only on rpi4b (SCTLR.C never set), so no
+	 * plo writes ever entered the A72 D-cache; every plo store went
+	 * direct to DDR. Any cache lines that DO exist for DDR PAs at
+	 * teardown time must therefore be stale firmware-era lines (the
+	 * VC4 boot stack writes through its own cache; some lines may
+	 * still be resident in A72 L2 when control passes to plo). Using
+	 * dc civac (the canonical zynqmp pattern, hal_dcacheFlush) would
+	 * CLEAN those stale lines back to DDR, overwriting the bytes plo
+	 * just placed for the kernel image, syspage, mailbox buffer, etc.
+	 * Using dc ivac (hal_dcacheInval) DISCARDS them — the safe choice
+	 * here because the only valid copy is in DDR.
+	 *
+	 * This matters once the kernel turns on SCTLR.C: the walker reads
+	 * page-table entries through the data cache, and any stale lines
+	 * left over from firmware would shadow our DDR writes. */
 	hal_dcacheEnable(0);
-	hal_dcacheFlush((addr_t)ADDR_DDR, (addr_t)ADDR_DDR + (addr_t)SIZE_DDR);
+	hal_dcacheInval((addr_t)ADDR_DDR, (addr_t)ADDR_DDR + (addr_t)SIZE_DDR);
 	hal_icacheEnable(0);
 	hal_icacheInval();
 	mmu_disable();
