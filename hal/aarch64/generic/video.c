@@ -253,12 +253,12 @@ static void video_drawSignal(void)
 	}
 	hal_consolePrint("draw: post-bg-fill\n");
 
-	/* TD-plo-video-panel: panel/box rendering currently crashes with
-	 * a wild FAR (corrupted base register). bg-fill is enough as a
-	 * visual "plo got this far" hint. Flush and return early. */
-	hal_dcacheClean((addr_t)video_common.framebuffer, (addr_t)video_common.framebuffer + video_common.size);
-	hal_consolePrint("draw: post-dcacheClean\n");
-	return;
+	/* 2026-05-17: restored full 3-square progress panel rendering.
+	 * The "wild FAR" crash that previously forced the early return
+	 * was a cache-off-era MMU artifact; with armstub fixes
+	 * (1319367 + L2CTLR_EL1) and caches operational, the panel
+	 * code runs cleanly. Matches the original Phoenix-RTOS boot
+	 * progress visual on other platforms. */
 
 	if ((video_common.width < 128u) || (video_common.height < 64u)) {
 		hal_dcacheClean((addr_t)video_common.framebuffer, (addr_t)video_common.framebuffer + video_common.size);
