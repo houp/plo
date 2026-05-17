@@ -104,9 +104,7 @@ static void hal_memoryInit(void)
 	size_t sz;
 	addr_t addr;
 
-	hal_consolePrint("mem: pre-init\n");
 	mmu_init();
-	hal_consolePrint("mem: post-init\n");
 
 	/* Pi 4 4GB unlock: remap all ARM-accessible DRAM as Normal WB
 	 * Cacheable, EXCEPT the 76 MB GPU reserve (which VC4 owns and which
@@ -127,22 +125,12 @@ static void hal_memoryInit(void)
 		}
 		mmu_mapAddr(addr, addr, MMU_FLAG_CACHED);
 	}
-	hal_consolePrint("mem: post-map\n");
 
-	/* Phase Z1 reverted (2026-05-17): mmu_enable() (single-shot M|C|I)
-	 * confirmed hanging at the MSR on real Pi 4 — UART stops at
-	 * "mem: pre-mmu-enable" and never reaches "mem: post-mmu-enable".
-	 * This matches the earlier empirical finding that single-shot M|C
-	 * in plo is incompatible with A72 r0p3 + BCM2711 firmware state.
-	 *
-	 * Keep plo at SCTLR.M=1 only (caches off). The kernel-side Phase Z
-	 * changes (single-shot M|C|I in _init.S, no TD-04 NC override, no
-	 * post-copy clean_inval) remain in effect — they're independent of
-	 * plo's SCTLR state and can be tested without restoring plo cache-on.
-	 */
+	/* plo runs SCTLR.M=1 only (caches off). The single-shot M|C|I
+	 * variant hangs at the MSR on A72 r0p3 + BCM2711 silicon. The
+	 * kernel's _init.S enables full M|C|I once it takes over. */
 	{
 		u64 val;
-		hal_consolePrint("mem: pre-iallu\n");
 		asm volatile (
 			"ic   ialluis\n"
 			"dsb  ish\n"
@@ -150,17 +138,13 @@ static void hal_memoryInit(void)
 			"dsb  ish\n"
 			"isb\n"
 			::: "memory");
-		hal_consolePrint("mem: post-iallu\n");
 		asm volatile ("mrs %0, sctlr_el1" : "=r"(val));
 		val |= (1uL << 0);  /* SCTLR.M only (cache-off plo) */
-		hal_consolePrint("mem: pre-sctlr-M\n");
 		asm volatile (
 			"msr sctlr_el1, %0\n"
 			"isb\n"
 			:: "r"(val) : "memory");
-		hal_consolePrint("mem: post-sctlr-M\n");
 	}
-	hal_consolePrint("mem: post-enable\n");
 }
 
 
