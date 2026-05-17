@@ -236,16 +236,67 @@ void hal_graphicsInit(void)
 }
 
 
+static void hal_printHex64(const char *label, u64 val);
+
+
 void hal_syspageSet(hal_syspage_t *hs)
 {
+	addr_t dtbAddr;
+	u32 armstubDtb32;
+
 	hal_common.hs = hs;
 	hs->resetReason = 0;
 	hs->firmwareDtb = 0;
 	hs->firmwareDtbSize = 0;
 
-	if ((hal_firmwareDtb != 0u) && (hal_readBe32(hal_firmwareDtb) == 0xd00dfeedu)) {
-		hs->firmwareDtb = hal_firmwareDtb;
-		hs->firmwareDtbSize = hal_readBe32(hal_firmwareDtb + 4u);
+	/* TD-06 (Goal 3: 4 GB RAM) fix 2026-05-17.
+	 *
+	 * The Pi 4 firmware patches the armstub's `dtb_ptr32` field
+	 * (PA 0xf8 — physical address of the firmware-moved runtime
+	 * DTB) AND `kernel_entry32` (PA 0xfc — kernel start). The
+	 * runtime DTB has both the low memory bank (`memory@0`) and
+	 * the high memory bank (`memory@40000000`) on 4 GB Pi 4. The
+	 * static `system.dtb` on disk has only the low bank, so we
+	 * MUST use the firmware-patched DTB to see all RAM.
+	 *
+	 * Empirically (2026-05-17 diagnostics): even when the
+	 * firmware patches `dtb_ptr32` correctly with the moved-DTB
+	 * physical address (e.g. `0x2eff1e00`), the `x0` register
+	 * value the armstub passes to plo arrives as 0. The chain
+	 * (armstub `mov x0, x5` -> kernel8-reloc stub `mov x0, x19`
+	 * -> plo `mov x19, x0`) loses the value. Rather than chase
+	 * that fragile propagation, read the armstub's `dtb_ptr32`
+	 * field directly from PA 0xf8 in DRAM — the armstub lives at
+	 * PA 0x0 by Pi 4 firmware convention and the field stays
+	 * valid until plo overwrites that page (nothing in plo's
+	 * boot path does).
+	 *
+	 * Inline asm avoids GCC's null-pointer-deref warning on a
+	 * direct C-pointer read of PA 0xf8 in hosted-mode compile. */
+	asm volatile (
+		"mov x9, #0xf8\n"
+		"ldr %w0, [x9]\n"
+		: "=r"(armstubDtb32)
+		:
+		: "x9", "memory");
+
+	hal_printHex64("plo: hal_firmwareDtb = 0x", (u64)hal_firmwareDtb);
+	hal_printHex64("plo: armstub[0xf8]   = 0x", (u64)armstubDtb32);
+
+	dtbAddr = hal_firmwareDtb;
+	if (dtbAddr == 0u) {
+		dtbAddr = (addr_t)armstubDtb32;
+	}
+
+	if ((dtbAddr != 0u) && (hal_readBe32(dtbAddr) == 0xd00dfeedu)) {
+		hs->firmwareDtb = dtbAddr;
+		hs->firmwareDtbSize = hal_readBe32(dtbAddr + 4u);
+		hal_printHex64("plo: firmware DTB at  = 0x", (u64)dtbAddr);
+		hal_printHex64("plo: firmware DTB size= 0x", (u64)hs->firmwareDtbSize);
+		hal_consolePrint("plo: firmware DTB accepted\n");
+	}
+	else {
+		hal_consolePrint("plo: firmware DTB rejected\n");
 	}
 }
 
