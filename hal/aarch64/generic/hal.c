@@ -129,35 +129,19 @@ static void hal_memoryInit(void)
 	}
 	hal_consolePrint("mem: post-map\n");
 
-	/* Enable MMU + D-cache + I-cache in ONE SCTLR_EL1 write.
+	/* Phase Z1 reverted (2026-05-17): mmu_enable() (single-shot M|C|I)
+	 * confirmed hanging at the MSR on real Pi 4 — UART stops at
+	 * "mem: pre-mmu-enable" and never reaches "mem: post-mmu-enable".
+	 * This matches the earlier empirical finding that single-shot M|C
+	 * in plo is incompatible with A72 r0p3 + BCM2711 firmware state.
 	 *
-	 * This is the exact recipe used by Circle, rust-raspberrypi-OS-
-	 * tutorials, NetBSD/evbarm, and Linux's __enable_mmu on Pi 4. The
-	 * key bits identified by parallel multi-subagent research:
-	 *
-	 *   1. SINGLE SCTLR write, not staged. Staging (M then M|I then
-	 *      M|I|C) opens a speculation window matching Cortex-A72
-	 *      erratum 1319367 and creates moments where the IFU's
-	 *      cacheability decisions are inconsistent with the SCTLR
-	 *      state, leading to garbage I-fetches after the third stage.
-	 *   2. NO post-flip `ic ialluis`. Per ARMv8 ARM B2.2.7 the cache
-	 *      invalidation across the M=0->1 boundary is implicit; an
-	 *      explicit broadcast invalidate opens a fresh speculation
-	 *      window that NONE of the working bare-metal projects do.
-	 *   3. NO pre-MMU set/way (`dc isw`) or per-VA (`dc ivac`) data-
-	 *      cache maintenance over the kernel image. ARM ARM B2.2.6 +
-	 *      DEN0024 are explicit that set/way is "for power-down only,
-	 *      not coherency". Per-VA `dc ivac` over the image was also
-	 *      empirically tried — didn't help; it just creates more
-	 *      speculation surface.
-	 *
-	 * The pre-flip ritual (broadcast-IS I-cache + TLB invalidate +
-	 * barriers) IS architecturally required and matches Linux's
-	 * `set_sctlr` precondition.
+	 * Keep plo at SCTLR.M=1 only (caches off). The kernel-side Phase Z
+	 * changes (single-shot M|C|I in _init.S, no TD-04 NC override, no
+	 * post-copy clean_inval) remain in effect — they're independent of
+	 * plo's SCTLR state and can be tested without restoring plo cache-on.
 	 */
 	{
 		u64 val;
-
 		hal_consolePrint("mem: pre-iallu\n");
 		asm volatile (
 			"ic   ialluis\n"
@@ -167,38 +151,8 @@ static void hal_memoryInit(void)
 			"isb\n"
 			::: "memory");
 		hal_consolePrint("mem: post-iallu\n");
-
 		asm volatile ("mrs %0, sctlr_el1" : "=r"(val));
-		hal_consolePrint("mem: post-read-sctlr\n");
-
-		/* SCTLR_EL1.M only (caches off). M-only is the boot-correct
-		 * baseline on Pi 4. D-cache enable in plo is a multi-stage
-		 * problem (TD-plo-dcache, TD-plo-icache) tracked in
-		 * docs/research/2026-05-12-dcache-civac-partial-fix.md and
-		 * docs/research/2026-05-13-plo-cache-empirical-pivot.md.
-		 *
-		 * Empirically confirmed this session:
-		 *   - Single-shot M|C hangs at the MSR (A72 quirk,
-		 *     independent of erratum 1319367 which IS now applied
-		 *     in the armstub).
-		 *   - Staged M-then-MC (with ISB between) clears that hang.
-		 *   - With staged M|C, plo reaches the banner cleanly
-		 *     thanks to 1319367; but the user.plo command parse
-		 *     hits intermittent mid-string printf garble and the
-		 *     kernel ELF read fails with EINVAL.
-		 *   - `dc civac` of firmware-dirty L2 lines is
-		 *     COUNTER-PRODUCTIVE: civac cleans (writes back) the
-		 *     stale lines on top of correct RAM contents — A72 L2
-		 *     is UNIFIED (I+D), so cleaning poisons plo's .text.
-		 *     `dc ivac` (invalidate-only) is the correct
-		 *     primitive but didn't fully clear the residual
-		 *     garble — root cause still partially open.
-		 *
-		 * The plo cache-on path is parked here. The kernel boots
-		 * in its own address space (high VAs that firmware never
-		 * touched) and is the better target for cache enable — that
-		 * work continues separately. */
-		val |= (1uL << 0);
+		val |= (1uL << 0);  /* SCTLR.M only (cache-off plo) */
 		hal_consolePrint("mem: pre-sctlr-M\n");
 		asm volatile (
 			"msr sctlr_el1, %0\n"
@@ -549,27 +503,12 @@ int hal_cpuJump(void)
 	hal_coreJumpFlag = 1;
 	hal_consolePrint("hal: jump exit el1\n");
 
-	/* Tear down the cacheable execution environment hal_memoryInit() set
-	 * up. Order: drop D-cache enable first, INVALIDATE (do NOT clean)
-	 * the entire DDR range to discard any cache lines left over from
-	 * the VC4/firmware boot phase, drop I-cache, invalidate I-cache,
-	 * then mmu_disable.
-	 *
-	 * Rationale: plo runs M-only on rpi4b (SCTLR.C never set), so no
-	 * plo writes ever entered the A72 D-cache; every plo store went
-	 * direct to DDR. Any cache lines that DO exist for DDR PAs at
-	 * teardown time must therefore be stale firmware-era lines (the
-	 * VC4 boot stack writes through its own cache; some lines may
-	 * still be resident in A72 L2 when control passes to plo). Using
-	 * dc civac (the canonical zynqmp pattern, hal_dcacheFlush) would
-	 * CLEAN those stale lines back to DDR, overwriting the bytes plo
-	 * just placed for the kernel image, syspage, mailbox buffer, etc.
-	 * Using dc ivac (hal_dcacheInval) DISCARDS them — the safe choice
-	 * here because the only valid copy is in DDR.
-	 *
-	 * This matters once the kernel turns on SCTLR.C: the walker reads
-	 * page-table entries through the data cache, and any stale lines
-	 * left over from firmware would shadow our DDR writes. */
+	/* Phase Z1 reverted (2026-05-17): plo runs M-only (mmu_enable
+	 * single-shot M|C|I hangs at MSR on A72 r0p3 + BCM2711). With
+	 * caches off, plo's writes go direct to DDR; cache lines that
+	 * exist at teardown are stale firmware-era residue. Use
+	 * dc ivac (invalidate-only) — clean would write those stale
+	 * lines back over the correct DDR data plo just placed. */
 	hal_dcacheEnable(0);
 	hal_dcacheInval((addr_t)ADDR_DDR, (addr_t)ADDR_DDR + (addr_t)SIZE_DDR);
 	hal_icacheEnable(0);
