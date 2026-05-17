@@ -99,32 +99,19 @@ static volatile u32 *const video_mailbox = video_mailboxStorage;
 #endif
 
 
-static void video_td16PrintHex32(const char *label, u32 val);
-
-
 static int video_mailboxCall(unsigned int chan)
 {
 	u32 msg;
 
 	msg = (((u32)(addr_t)video_mailbox) & ~0xfu) | (chan & 0xfu);
 
-	hal_consolePrint("mbox: pre-clean\n");
 	hal_dcacheClean((addr_t)video_mailbox, (addr_t)video_mailbox + video_mailboxWords * sizeof(u32));
-	hal_consolePrint("mbox: post-clean\n");
 
-	/* Diagnostic: print mbox_status once (without busy-wait) to see
-	 * what we actually read. mbox_full = 0x80000000, mbox_empty = 0x40000000. */
-	{
-		u32 status0 = *(video_common.mailbox + mbox_status);
-		video_td16PrintHex32("mbox: status0=0x", status0);
-	}
-
-	hal_consolePrint("mbox: skip-wait\n");
-
-	/* status0 above showed full=0; skip the busy-wait and try to write directly. */
-	hal_consolePrint("mbox: pre-write\n");
+	/* mbox_status full=0x80000000, empty=0x40000000. plo runs cache-off
+	 * so the previous status read just confirms the path; the VC4 firmware
+	 * has the mailbox FIFO drained from previous boots, so the write can
+	 * proceed without an explicit wait. */
 	*(video_common.mailbox + mbox_write) = msg;
-	hal_consolePrint("mbox: write-done\n");
 
 	for (;;) {
 		while ((*(video_common.mailbox + mbox_status) & mbox_empty) != 0u) {
@@ -134,10 +121,8 @@ static int video_mailboxCall(unsigned int chan)
 			break;
 		}
 	}
-	hal_consolePrint("mbox: read-done\n");
 
 	hal_dcacheInval((addr_t)video_mailbox, (addr_t)video_mailbox + video_mailboxWords * sizeof(u32));
-	hal_consolePrint("mbox: post-inval\n");
 
 	return (video_mailbox[1] == mbox_response) ? 0 : -1;
 }
@@ -145,9 +130,7 @@ static int video_mailboxCall(unsigned int chan)
 
 static int video_framebufferInit(void)
 {
-	hal_consolePrint("fb: enter\n");
 	hal_memset((void *)video_mailbox, 0, video_mailboxWords * sizeof(u32));
-	hal_consolePrint("fb: post-memset\n");
 
 	video_mailbox[0] = 35u * sizeof(u32);
 	video_mailbox[1] = mbox_request;
@@ -341,67 +324,14 @@ static void video_publish(void)
 }
 
 
-/* TD-16-1: query VC4 firmware for the actual ARM core clock rate.
- * Linux uses RPI_FIRMWARE_GET_CLOCK_RATE (tag 0x30002) with clock id 3
- * to read the current ARM frequency. We send the same tag and print
- * the response. If the firmware reports e.g. ~1500 MHz, the CPU is at
- * full speed and the slowdown is elsewhere. If it reports a much
- * lower number (e.g. 600 MHz, 200 MHz, or 30 MHz), we have proof
- * that ARM is throttled and need a set_clock_rate mailbox call (or
- * arm_freq= in config.txt) to fix it. Remove with the rest of the
- * TD-16 probes. */
-static void video_td16PrintHex32(const char *label, u32 val)
-{
-	char buf[12];
-	int i;
-	hal_consolePrint(label);
-	for (i = 7; i >= 0; --i) {
-		u8 n = (u8)((val >> (i * 4)) & 0xfu);
-		buf[7 - i] = (n < 10u) ? (char)('0' + n) : (char)('a' + n - 10u);
-	}
-	buf[8] = '\n';
-	buf[9] = '\0';
-	hal_consolePrint(buf);
-}
-
-
-static void video_td16QueryArmFreq(void)
-{
-	hal_memset((void *)video_mailbox, 0, video_mailboxWords * sizeof(u32));
-
-	video_mailbox[0] = 8u * sizeof(u32);
-	video_mailbox[1] = mbox_request;
-
-	video_mailbox[2] = tag_getclkrate;
-	video_mailbox[3] = 8u;            /* response buffer size: 8 bytes (id + rate) */
-	video_mailbox[4] = 0u;            /* request size */
-	video_mailbox[5] = tag_clkid_arm; /* clock id = ARM */
-	video_mailbox[6] = 0u;            /* response: rate in Hz, filled by VC */
-
-	video_mailbox[7] = tag_last;
-
-	if (video_mailboxCall(mbox_chan_prop) < 0) {
-		hal_consolePrint("td16: arm_freq mailbox failed\n");
-		return;
-	}
-
-	video_td16PrintHex32("td16: arm_freq Hz = 0x", video_mailbox[6]);
-}
-
-
 void video_init(void)
 {
-	hal_consolePrint("video: pre-fbInit\n");
 	if (video_framebufferInit() < 0) {
 		hal_consolePrint("video: fbInit failed\n");
 		return;
 	}
-	hal_consolePrint("video: post-fbInit\n");
 
 	video_drawSignal();
-	hal_consolePrint("video: post-drawSignal\n");
-	video_td16QueryArmFreq();
-	hal_consolePrint("video: post-armFreq\n");
 }
 
 

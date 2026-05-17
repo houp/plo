@@ -443,103 +443,6 @@ static void hal_printHex64(const char *label, u64 val)
 }
 
 
-/* E1 probe: with plo running cache-off (SCTLR.C=0), two back-to-back loads
- * over the same DDR range should return identical bytes unless some other
- * agent (firmware, VideoCore DMA, secondary core) is writing to DDR. Probe
- * the syspage offset region 0x280..0x340 (where the kernel later observes
- * bit-flipped map entries) twice with a dsb between, and report any diffs
- * via UART. If diffs appear, an external writer is proven. */
-static void hal_probeSyspage(void)
-{
-	volatile const u64 *base;
-	u64 snap1[24], snap2[24];
-	int i, diffs = 0;
-	volatile int spin;
-
-	if (hal_common.hs == NULL) {
-		hal_consolePrint("probe: no syspage\n");
-		return;
-	}
-
-	base = (volatile const u64 *)((u8 *)hal_common.hs + 0x280);
-
-	hal_consolePrint("probe: pre-jump read#1\n");
-	for (i = 0; i < 24; ++i) {
-		snap1[i] = base[i];
-	}
-	__asm__ volatile("dsb sy" ::: "memory");
-
-	for (spin = 0; spin < 10000; ++spin) {
-	}
-
-	__asm__ volatile("dsb sy" ::: "memory");
-	for (i = 0; i < 24; ++i) {
-		snap2[i] = base[i];
-	}
-	__asm__ volatile("dsb sy" ::: "memory");
-
-	for (i = 0; i < 24; ++i) {
-		if (snap1[i] != snap2[i]) {
-			++diffs;
-			hal_printHex64("probe diff off=", (u64)(0x280 + i * 8));
-			hal_printHex64("  r1=", snap1[i]);
-			hal_printHex64("  r2=", snap2[i]);
-		}
-	}
-
-	if (diffs == 0) {
-		hal_consolePrint("probe: no diff (DDR stable)\n");
-	}
-	else {
-		hal_consolePrint("probe: external writer detected\n");
-	}
-
-	/* Dump the exact 32 bytes (offset 0x310..0x32F) the kernel B{} field
-	 * shows — so we can compare plo's source vs kernel's copy across boots.
-	 * If these bytes vary across boots while the kernel's B{} also varies
-	 * matching them, plo is feeding uninitialized syspage padding. If
-	 * plo's bytes are stable but kernel's vary, the corruption is on the
-	 * kernel side. */
-	{
-		volatile const u64 *p = (volatile const u64 *)((u8 *)hal_common.hs + 0x310);
-		hal_printHex64("probe[0x310]=", p[0]);
-		hal_printHex64("probe[0x318]=", p[1]);
-		hal_printHex64("probe[0x320]=", p[2]);
-		hal_printHex64("probe[0x328]=", p[3]);
-	}
-}
-
-
-/* TODO(TD-15-mboxprobe): write a known 64-byte pattern to PA
- * PLO_RPI_MAILBOX_BUFFER_ADDRESS just before eret. Kernel reads it
- * back via the NC TTL3 alias added in
- * phoenix-rtos-kernel/hal/aarch64/_init.S; drift = some agent
- * (suspected VC4) is writing to ARM-usable DRAM after our last
- * mailbox call. Pattern: word[i] = 0xa5a5a5a5 ^ (i * 0x01010101).
- * Plo runs cache-off so a direct store hits DDR; we still issue a
- * dsb sy + isb to drain. Remove together with the kernel-side
- * probe once TD-15 phase 1 is done. */
-#if defined(PLO_RPI_MAILBOX_BUFFER_ADDRESS) && (PLO_RPI_MAILBOX_BUFFER_ADDRESS != 0)
-static void hal_td15ProbeWrite(void)
-{
-	volatile u32 *buf = (volatile u32 *)(addr_t)PLO_RPI_MAILBOX_BUFFER_ADDRESS;
-	u32 i;
-	hal_consolePrint("td15: probe write start\n");
-	for (i = 0u; i < 16u; ++i) {
-		buf[i] = 0xa5a5a5a5u ^ (i * 0x01010101u);
-	}
-	__asm__ volatile("dsb sy" ::: "memory");
-	__asm__ volatile("isb" ::: "memory");
-	hal_printHex64("td15: probe write done @ pa=", (u64)PLO_RPI_MAILBOX_BUFFER_ADDRESS);
-}
-#else
-static void hal_td15ProbeWrite(void)
-{
-	hal_consolePrint("td15: probe write skipped (no mailbox buffer addr)\n");
-}
-#endif
-
-
 int hal_cpuJump(void)
 {
 	if (hal_common.entry == (addr_t)-1) {
@@ -565,13 +468,6 @@ int hal_cpuJump(void)
 	hal_icacheEnable(0);
 	hal_icacheInval();
 	mmu_disable();
-
-	hal_probeSyspage();
-
-	/* TD-15 phase 1: stamp mailbox buffer with known pattern; kernel
-	 * reads it back via NC alias to detect VC4 writes during the
-	 * plo→kernel→main_initthr handoff window. */
-	hal_td15ProbeWrite();
 
 	hal_exitToEL1();
 
