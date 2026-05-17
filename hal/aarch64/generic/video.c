@@ -230,19 +230,11 @@ static void video_drawSignal(void)
 	u32 boxSize, gap, outerPad, innerPad, boxX, boxY, px;
 	volatile u32 *row;
 
-	hal_consolePrint("draw: enter\n");
 	if (video_common.framebuffer == NULL) {
-		hal_consolePrint("draw: fb null, return\n");
 		return;
 	}
-	video_td16PrintHex32("draw: fb=0x", (u32)(addr_t)video_common.framebuffer);
-	video_td16PrintHex32("draw: w=0x", video_common.width);
-	video_td16PrintHex32("draw: h=0x", video_common.height);
-	video_td16PrintHex32("draw: pitch=0x", video_common.pitch);
-	video_td16PrintHex32("draw: size=0x", video_common.size);
 
 	stride = video_common.pitch / sizeof(u32);
-	hal_consolePrint("draw: pre-bg-fill\n");
 
 	for (y = 0; y < video_common.height; ++y) {
 		row = video_common.framebuffer + y * stride;
@@ -251,7 +243,6 @@ static void video_drawSignal(void)
 			row[x] = video_background;
 		}
 	}
-	hal_consolePrint("draw: post-bg-fill\n");
 
 	/* 2026-05-17: restored full 3-square progress panel rendering.
 	 * The "wild FAR" crash that previously forced the early return
